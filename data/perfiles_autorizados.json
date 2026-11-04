@@ -1,0 +1,76 @@
+[
+  {
+    "nombre": "Mefredy Acevedo",
+    "clave_cliente": "",
+    "autorizado": true,
+    "autorizacion": "Autorización directa para leer el perfil público y usarlo al ofrecer seguros.",
+    "urls": [
+      "https://www.linkedin.com/in/mafredyacevedo/"
+    ]
+  },
+  {
+    "nombre": "Aarón Gutierrez",
+    "clave_cliente": "",
+    "autorizado": true,
+    "autorizacion": "Autorización directa de la persona para leer su perfil público y usarlo al ofrecer seguros.",
+    "urls": [
+      "https://www.linkedin.com/in/aar%C3%B3n-guti%C3%A9rrez-226381171/"
+    ]
+  },
+  {
+    "nombre": "Julián López",
+    "clave_cliente": "",
+    "autorizado": true,
+    "autorizacion": "Autorización directa de la persona para leer su perfil público y usarlo al ofrecer seguros.",
+    "urls": [
+      "https://www.linkedin.com/in/juli%C3%A1nl%C3%B3pez/"
+    ]
+  },
+  {
+    "nombre": "Nelson Pinzón",
+    "clave_cliente": "",
+    "autorizado": true,
+    "autorizacion": "Autorización directa de la persona para leer su perfil público y usarlo al ofrecer seguros.",
+    "urls": [
+      "https://www.linkedin.com/in/nelson-pinzon/"
+    ]
+  },
+  {
+    "nombre": "Yimy Osvaldo Alvarez Gomez",
+    "clave_cliente": "",
+    "autorizado": true,
+    "autorizacion": "Autorización directa de la persona para leer su perfil público de Facebook y usarlo al ofrecer seguros.",
+    "urls": [
+      "https://www.facebook.com/alvarez76",
+      "https://x.com/yiosalgo76"
+    ]
+  },
+  {
+    "nombre": "Daniela Álvarez",
+    "clave_cliente": "",
+    "autorizado": true,
+    "autorizacion": "Autorización directa de la persona para leer su perfil público de Facebook y usarlo al ofrecer seguros.",
+    "urls": [
+      "https://www.facebook.com/daniela.alvarez.130160",
+      "https://www.instagram.com/daa0926/"
+    ]
+  },
+  {
+    "nombre": "Mariany López",
+    "clave_cliente": "",
+    "autorizado": true,
+    "autorizacion": "Autorización directa de la persona para leer su perfil público de Facebook y usarlo al ofrecer seguros.",
+    "urls": [
+      "https://www.linkedin.com/in/marianylopezsanchez-backend-developer/"
+    ]
+  },
+  {
+    "nombre": "Santiago Rozo",
+    "clave_cliente": "",
+    "autorizado": true,
+    "autorizacion": "Autorización directa de la persona para leer su perfil público de Facebook y usarlo al ofrecer seguros.",
+    "urls": [
+      "https://www.instagram.com/santiago_r147/"
+    ]
+  }
+]

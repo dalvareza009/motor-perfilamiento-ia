@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "motor-web",
+      "runtimeExecutable": ".venv\\Scripts\\python.exe",
+      "runtimeArgs": ["-m", "app.api"],
+      "port": 8000
+    },
+    {
+      "name": "motor-web-pruebas",
+      "runtimeExecutable": ".venv\\Scripts\\python.exe",
+      "runtimeArgs": ["-c", "import os; os.environ['WEB_PUERTO'] = '8001'; from app.api import main; main()"],
+      "port": 8001
+    }
+  ]
+}

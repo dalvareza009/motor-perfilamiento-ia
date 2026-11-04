@@ -1,0 +1,21 @@
+[
+  {
+    "nombre": "Tu nombre",
+    "clave_cliente": "",
+    "autorizado": true,
+    "autorizacion": "Autorización directa para leer el perfil público y usarlo al ofrecer seguros.",
+    "urls": [
+      "https://www.linkedin.com/in/REEMPLAZAR",
+      "https://www.instagram.com/REEMPLAZAR/"
+    ]
+  },
+  {
+    "nombre": "Nombre de la otra persona",
+    "clave_cliente": "",
+    "autorizado": true,
+    "autorizacion": "Autorización directa de la persona para leer su perfil público.",
+    "urls": [
+      "https://www.linkedin.com/in/REEMPLAZAR-2"
+    ]
+  }
+]

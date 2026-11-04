@@ -1,0 +1,34 @@
+# Sesión de LinkedIn: equivale a tener la cuenta abierta. Nunca subir ni compartir.
+linkedin_cookies.json
+chrome_linkedin_profile/
+facebook_cookies.json
+chrome_facebook_profile/
+instagram_cookies.json
+chrome_instagram_profile/
+x_cookies.json
+chrome_x_profile/
+
+# Salida del scraper
+linkedin_activity_*.csv
+linkedin_actividad_*.csv
+linkedin_recomendaciones_*.csv
+linkedin_resumen_*.json
+facebook_actividad_*.csv
+facebook_recomendaciones_*.csv
+facebook_resumen_*.json
+instagram_actividad_*.csv
+instagram_recomendaciones_*.csv
+instagram_resumen_*.json
+x_actividad_*.csv
+x_recomendaciones_*.csv
+x_resumen_*.json
+
+.env
+.env.para-el-jefe
+datos_iniciales/base_datos.sql
+agent-transcripts/
+.cursor/
+__pycache__/
+.venv/
+.vercel/
+.vercel

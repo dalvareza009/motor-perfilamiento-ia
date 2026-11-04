@@ -1,0 +1,7 @@
+psycopg2-binary
+requests
+python-dotenv
+firecrawl-py
+fastapi
+uvicorn[standard]
+selenium
