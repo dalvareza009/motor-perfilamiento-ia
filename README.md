@@ -1,84 +1,100 @@
-# Qué ejecutar en local para usar la solución con Vercel
+# Motor de perfilamiento IA
 
-La interfaz ya está en Vercel. **El scraping no puede correr ahí** (Chrome, login y cookies de redes). Para que el jefe vea hechos nuevos en la nube, hay que scrapear en un PC y escribir en la **misma base Neon** que usa Vercel.
+Herramienta interna de Global Seguros: segmentación de clientes, borradores de WhatsApp y correo, conocimiento de producto y lectura de **perfiles públicos autorizados** (LinkedIn, X, Facebook, Instagram).
 
-- App: https://motor-perfilamiento-ia.vercel.app
+Las cifras salen de SQL. El modelo solo interpreta preguntas y redacta textos; no inventa coberturas ni datos personales. Cada consulta queda en auditoría.
+
 - Código: https://github.com/dalvareza009/motor-perfilamiento-ia
+- App en Vercel: https://motor-perfilamiento-ia.vercel.app
 
-## 1. Qué hace falta en el PC
+## Qué incluye
 
-| Software | Para qué | Enlace |
-| --- | --- | --- |
-| Python 3.12 o superior | Correr la app y los scrapers | https://www.python.org/downloads/ (marca *Add python.exe to PATH*) |
-| Google Chrome (no Edge) | Sesión de LinkedIn / X / Facebook / Instagram | https://www.google.com/chrome/ |
-| Git (opcional) | Clonar el repo | ya instalado en el equipo de desarrollo |
-| Este repositorio | Código del motor | `git clone https://github.com/dalvareza009/motor-perfilamiento-ia.git` |
+- **Panel y segmentos:** conteos, k-anonimato para el rol analista, plantillas por grupo.
+- **Clientes:** ficha, hechos de perfil, perfil IA, borradores por canal.
+- **Asistente:** pregunta en lenguaje natural → intención (LLM) → SQL o generación de mensajes (código).
+- **Borradores:** validación automática, estados (borrador → revisión → aprobado → enviado).
+- **Conocimiento:** ingesta del sitio (Firecrawl), aprobación humana, búsqueda vectorial si hay embeddings.
+- **Perfiles públicos:** lista de personas que autorizaron por escrito; scraping con la sesión de Chrome de quien opera.
+- **Duplicados y auditoría.**
 
-**No hace falta** instalar Postgres ni Ollama en el PC: la base es Neon y el modelo es el AI Gateway de Vercel.
+### Roles
 
-## 2. Variables de entorno (conectar local → Vercel)
+| Rol | Alcance |
+| --- | --- |
+| Analista | Cifras agregadas, resúmenes y plantillas. Los grupos con menos de 5 personas se ocultan. |
+| Asesor | Lo anterior más fichas, borradores individuales y en lote. |
+| Administrador | Lo anterior más conocimiento, perfiles, duplicados, ingesta y auditoría. |
 
-En la raíz del proyecto:
+## Cómo está armado
+
+```
+frontend/     Interfaz (HTML/JS)
+app/          API FastAPI y reglas de negocio
+*_scraper.py  LinkedIn, X, Facebook, Instagram (Selenium + Chrome)
+data/         Perfiles autorizados
+tests/        Pruebas
+scripts/      Arranque local y carga de base
+```
+
+- **Datos:** PostgreSQL (`DATABASE_URL` o `DB_HOST` / `DB_NAME` locales). En Vercel se usa Neon.
+- **Modelo:** Ollama en local (`qwen3:4b-instruct`) o API compatible (`LLM_BASE_URL`, en Vercel AI Gateway).
+- **Scraping:** Google Chrome en el PC. En Vercel no hay login manual; sin cookies vigentes las redes bloquean el datacenter.
+
+Hay dos formas de correrlo:
+
+1. **Local + Vercel** (scraping en el PC, app y base en la nube): [docs/local-con-vercel.md](docs/local-con-vercel.md)
+2. **Todo en el PC** (Postgres y Ollama propios): sección siguiente.
+
+## Arranque 100 % local
+
+Instalar Python 3.12+, Google Chrome, PostgreSQL 18 y Ollama (`qwen3:4b-instruct`, `nomic-embed-text`).
 
 ```powershell
 copy .env.example .env
-```
+# En .env: comenta DATABASE_URL y LLM_*; descomenta DB_* y OLLAMA_*
+# Ajusta DB_PASSWORD a la de tu Postgres
 
-Edita `.env` y deja **solo** esto (valores desde Vercel → proyecto *motor-perfilamiento-ia* → Settings → Environment Variables):
-
-```env
-DATABASE_URL=
-DEMO_CLAVE=jefe-prueba-2026
-SESION_SECRETA=jefe-prueba-2026
-LLM_BASE_URL=https://ai-gateway.vercel.sh/v1
-LLM_MODEL=openai/gpt-4o-mini
-LLM_API_KEY=
-```
-
-Cómo rellenar:
-
-- `DATABASE_URL`: copia **DATABASE_URL_UNPOOLED** (conexión directa de Neon). Si el scrape es corto, sirve `DATABASE_URL` (pooler).
-- `LLM_API_KEY`: clave de AI Gateway (Vercel → AI). Sin esto el scrape guarda hechos, pero no arma recomendaciones/borradores en local.
-- No pongas `SCRAPE_HEADLESS=1` ni `SCRAPE_MANUAL_LOGIN=0`: en el PC Chrome debe verse para que inicies sesión.
-
-No subas `.env` a GitHub. Tampoco cookies ni carpetas `chrome_*_profile`.
-
-## 3. Instalar dependencias y arrancar
-
-PowerShell, dentro de la carpeta del proyecto:
-
-```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\scripts\restaurar-base.ps1          # si tienes datos_iniciales/base_datos.sql
 .\.venv\Scripts\python.exe -m app.api
 ```
 
-Abre **Google Chrome** en http://127.0.0.1:8000
+O: `scripts\preparar-equipo.ps1` y luego `scripts\iniciar.ps1`.
 
-- Usuario: el que quieras (auditoría)
-- Clave: `jefe-prueba-2026`
-- Rol: **Administrador**
+Abrir http://127.0.0.1:8000 — usuario a elección, clave vacía si no hay `DEMO_CLAVE`, rol Administrador.
 
-## 4. Scrapear (esto es lo que Vercel no puede hacer)
+Detalle paso a paso también en `PARA_EL_JEFE.txt`.
 
-1. Menú → **Perfiles públicos**.
-2. URL de un perfil **autorizado** (LinkedIn, X, Facebook o Instagram).
-3. **Extraer actividad y recomendar**.
-4. En la ventana de Chrome que se abre, entra con **tu** cuenta de esa red (2FA si pide).
-5. Cuando veas el feed, vuelve a http://127.0.0.1:8000 y confirma que ya iniciaste sesión.
+## Scraping
 
-Los hechos se guardan en Neon. El resto del equipo los ve en https://motor-perfilamiento-ia.vercel.app (misma clave y rol Administrador o Asesor).
+Solo perfiles en `data/perfiles_autorizados.json` con autorización marcada.
 
-## 5. Checklist rápido
+1. Rol administrador → **Perfiles públicos**.
+2. Pegar la URL (LinkedIn, X, Facebook o Instagram).
+3. Extraer. Chrome se abre: iniciar sesión en esa red y confirmar en la web.
+4. Los hechos quedan pendientes de revisión; los aprobados se usan en borradores.
 
-- [ ] Python 3.12+ en PATH
-- [ ] Google Chrome instalado
-- [ ] Repo clonado o carpeta del proyecto
-- [ ] `.env` con `DATABASE_URL` de Neon (la de Vercel)
-- [ ] `.env` con `DEMO_CLAVE` y, si quieres borradores, `LLM_API_KEY`
-- [ ] `pip install -r requirements.txt` en `.venv`
-- [ ] `python -m app.api` y Chrome en el puerto 8000
+No versionar `*.json` de cookies ni carpetas `chrome_*_profile`.
 
-## Modo 100 % local (sin Vercel ni Neon)
+## Pruebas
 
-Si no vas a usar la nube: instala PostgreSQL 18 y Ollama (`qwen3:4b-instruct`, `nomic-embed-text`). Sigue `PARA_EL_JEFE.txt` y `scripts\preparar-equipo.ps1`. En ese caso el `.env` usa `DB_HOST` / `DB_PASSWORD` y **no** lleva `DATABASE_URL`.
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -q
+```
+
+## Variables de entorno
+
+Ver `.env.example`. Resumen:
+
+| Variable | Uso |
+| --- | --- |
+| `DATABASE_URL` | Postgres/Neon (si está definida, tiene prioridad) |
+| `DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | Postgres local |
+| `DEMO_CLAVE` | Si existe, la pantalla de entrada la pide |
+| `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` | Modelo en la nube |
+| `OLLAMA_*`, `EMBED_MODEL` | Modelo local |
+| `FIRECRAWL_API_KEY`, `SITIO_DOMINIO` | Ingesta del sitio de producto |
+| `SCRAPE_HEADLESS`, `SCRAPE_MANUAL_LOGIN` | En contenedor: headless y sin login manual |
+
+El archivo `.env` no se sube al repositorio.
