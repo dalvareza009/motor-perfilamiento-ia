@@ -42,7 +42,7 @@ scripts/      Arranque local y carga de base
 
 Hay dos formas de correrlo:
 
-1. **Local + Vercel** (scraping en el PC, app y base en la nube): [docs/local-con-vercel.md](docs/local-con-vercel.md)
+1. **Local + Vercel** (scraping en el PC, app y base en la nube): [ejecucion-local-vercel.md](ejecucion-local-vercel.md)
 2. **Todo en el PC** (Postgres y Ollama propios): sección siguiente.
 
 ## Arranque 100 % local
@@ -63,8 +63,6 @@ python -m venv .venv
 O: `scripts\preparar-equipo.ps1` y luego `scripts\iniciar.ps1`.
 
 Abrir http://127.0.0.1:8000 — usuario a elección, clave vacía si no hay `DEMO_CLAVE`, rol Administrador.
-
-Detalle paso a paso también en `PARA_EL_JEFE.txt`.
 
 ## Scraping
 
