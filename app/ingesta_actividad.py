@@ -72,6 +72,10 @@ def hechos_desde_info(info, posts=None):
     interacciones = _campo(info.get("interacciones"))
     if interacciones:
         perfil_redes._agregar(hechos, "Interacciones", interacciones)
+    for item in info.get("otras_redes") or []:
+        nota = perfil_redes.nota_otra_red(item)
+        if nota:
+            perfil_redes._agregar(hechos, "Otra red", nota)
     cuenta, salida = {}, []
     for hecho in hechos:
         n = cuenta.get(hecho["categoria"], 0) + 1
@@ -92,11 +96,25 @@ def _persona(persona, info, url):
 
 
 def persistir(persona, red, url, info, posts=None):
-    """Escribe ficha, productos sugeridos y actividad en la base. Devuelve conteos."""
+    """Escribe ficha, productos sugeridos y actividad en la base. Devuelve conteos.
+
+    Guarda siempre, aunque la URL no esté en Personas autorizadas: hechos de
+    ficha, revisión de contenido y seguidores/intereses.
+    """
     asegurar_hechos()
     asegurar_actividad()
     quien = _persona(persona, info, url)
+    from app.contenido import describir_publicacion, resumir_actividad
+    blobs = [
+        (info or {}).get("bio"), (info or {}).get("titular"), (info or {}).get("acerca"),
+        "\n".join((p.get("texto") or "") + " " + (p.get("enlaces") or "") for p in (posts or [])),
+    ]
+    info = perfil_redes.anexar_otras_redes(info or {}, "\n".join(p for p in blobs if p), red, url)
+    info = perfil_redes.aplicar_lo_publicado(info, posts)
     hechos = hechos_desde_info(info, posts)
+    resumen_pub = resumir_actividad(posts)
+    if resumen_pub:
+        perfil_redes._agregar(hechos, "Resumen de contenido", resumen_pub)
     sugeridos = perfil_redes.sugerir_productos(hechos) if hechos else []
     fragmentos = hechos + sugeridos
     n = a = s = 0
@@ -104,11 +122,29 @@ def persistir(persona, red, url, info, posts=None):
         n, a, s = _guardar(quien, red, url, fragmentos)
 
     nuevas = intereses = omitidas = 0
+    from app.contenido import texto_mostrable
     for post in posts or []:
         texto = (post.get("texto") or "").strip()
         if not texto:
             continue
-        evaluacion = linkedin_texto.evaluar_publicacion(texto)
+        limpio, estado = texto_mostrable(texto)
+        if estado == "omitir":
+            omitidas += 1
+            continue
+        desc = describir_publicacion({**post, "texto": limpio}) or {}
+        post = {
+            **post,
+            "texto": desc.get("texto") or limpio,
+            "resumen": desc.get("resumen") or "",
+            "tiene_imagenes": bool(desc.get("tiene_imagenes") or post.get("tiene_imagenes")),
+            "n_imagenes": int(desc.get("n_imagenes") or post.get("n_imagenes") or 0),
+        }
+        if estado != "ok":
+            id_pub, es_nueva = _guardar_publicacion(quien, url, post, red=red)
+            nuevas += int(es_nueva)
+            omitidas += 1
+            continue
+        evaluacion = linkedin_texto.evaluar_publicacion(limpio)
         if evaluacion["omitida"]:
             omitidas += 1
             continue

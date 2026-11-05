@@ -110,8 +110,40 @@ def test_lo_publicado_completa_edad_estado_civil_lugar_y_situacion():
     assert "34 años" in info["edad"] or "Tengo 34 años" in info["edad"]
     assert "36 años" in info["edad"]
     assert "8 años" not in info["edad"]
-    assert "estudiante" in info["estado_academico"].lower()
-    assert "desempleada" in info["estado_laboral"].lower()
+    assert "estudiante" in (info.get("estado_academico") or info.get("educacion") or "").lower()
+    assert "desempleada" in (info.get("estado_laboral") or "").lower()
+    assert "hija" in (info.get("familia") or "").lower()
+
+
+def test_del_caption_sale_graduacion_y_trabajo_propios():
+    from app.perfil_redes import aplicar_lo_publicado, detectar_otras_redes
+    info = aplicar_lo_publicado(
+        {"educacion": "Universidad de Pamplona", "experiencia": "Autónomo"},
+        [{"tipo": "publicacion", "texto": "Me gradué de la maestría. Trabajo como analista en Global."}],
+    )
+    assert "maestr" in (info.get("educacion") or info.get("estado_academico") or "").lower()
+    assert "analista" in (info.get("experiencia") or "").lower()
+    suelta = aplicar_lo_publicado(
+        {"educacion": "Universidad de Pamplona", "experiencia": "Autónomo"},
+        [{"tipo": "publicacion", "texto": "Pasé la tarde en la universidad con amigos del colegio."}],
+    )
+    assert suelta["educacion"] == "Universidad de Pamplona"
+    assert "colegio" not in suelta["educacion"]
+    assert suelta["experiencia"] == "Autónomo"
+    otras = detectar_otras_redes(
+        "Mi Instagram: https://www.instagram.com/ana.g/ y también https://x.com/ana",
+        "facebook", "https://www.facebook.com/ana")
+    redes = {o["red"] for o in otras}
+    assert "instagram" in redes and "x" in redes
+
+
+def test_la_ficha_si_llena_estudios_y_cargo():
+    from app.perfil_redes import aplicar_lo_publicado
+    info = aplicar_lo_publicado({}, [
+        {"tipo": "publicacion", "texto": "Analista en Global. Estudié en la Universidad EAFIT."},
+    ], origen="ficha")
+    assert "Analista" in info["experiencia"]
+    assert "EAFIT" in info["educacion"]
 
 
 def test_estudiar_no_cuenta_como_trabajo_actual():

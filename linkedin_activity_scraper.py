@@ -90,6 +90,35 @@ def extraer_red_de(driver, red, profile_url, info, posts=None):
     return fn(driver, red, profile_url, info, posts)
 
 
+SCRIPT_VER_MAS = """
+    const root = arguments[0] || document;
+    const claves = ['ver más','ver mas','see more','mostrar más','mostrar mas',
+                    'show more','leer más','read more','… más','... más','más','more'];
+    let n = 0;
+    if (!root || !root.querySelectorAll) return 0;
+    const nodos = root.querySelectorAll('div[role="button"], span[role="button"], button, a, span');
+    for (const el of nodos) {
+        const t = (el.innerText || '').trim().toLowerCase().replace(/\\s+/g, ' ');
+        if (!t || t.length > 28) continue;
+        if (claves.some(c => t === c || t.endsWith(' ' + c))) {
+            try { el.click(); n++; } catch (e) {}
+        }
+    }
+    return n;
+"""
+
+
+def expandir_ver_mas(driver, raiz=None):
+    """Pulsa 'ver más' para leer el texto completo, no el recorte de la red."""
+    try:
+        n = driver.execute_script(SCRIPT_VER_MAS, raiz)
+        if n:
+            time.sleep(0.35)
+        return int(n or 0)
+    except Exception:
+        return 0
+
+
 def parse_fecha_publicacion(texto, hoy=None):
     """Fecha aproximada desde «21 de may.», «10 de sept. de 2025», «3 sem»…
 
@@ -461,13 +490,15 @@ class LinkedInActivityScraper:
 
     # ---------- Extracción de una publicación ----------
     _LINEAS_UI = {"ver más", "see more", "… más", "... más", "ver menos", "see less",
+                  "mostrar más", "show more", "leer más", "read more",
                   "recomendar", "comentar", "compartir", "enviar", "like", "comment", "share"}
 
     def _limpiar_texto(self, texto, limite=2000):
         """Quita botones de la interfaz, fechas ISO y líneas repetidas; deja el contenido."""
+        from app.contenido import quitar_ver_mas
         from app.perfil_redes import quitar_fechas_iso
         vistas, limpias = set(), []
-        for linea in str(texto or "").splitlines():
+        for linea in quitar_ver_mas(texto).splitlines():
             linea = quitar_fechas_iso(re.sub(r"\s+", " ", linea).strip())
             clave = linea.lower()
             if not linea or clave in self._LINEAS_UI or clave in vistas:
@@ -478,9 +509,13 @@ class LinkedInActivityScraper:
 
     def expandir_texto(self, post):
         """Pulsa 'ver más' si existe, para no analizar un texto cortado a la mitad."""
+        if expandir_ver_mas(self.driver, post):
+            return
         try:
-            for boton in post.find_elements(By.CSS_SELECTOR, "button")[:12]:
-                if (boton.text or "").strip().lower() in self._LINEAS_UI - {"recomendar", "comentar", "compartir", "enviar", "like", "comment", "share"}:
+            omitir = {"recomendar", "comentar", "compartir", "enviar", "like", "comment", "share",
+                      "ver menos", "see less"}
+            for boton in post.find_elements(By.CSS_SELECTOR, "button, div[role='button'], span[role='button']")[:20]:
+                if (boton.text or "").strip().lower() in self._LINEAS_UI - omitir:
                     self.driver.execute_script("arguments[0].click();", boton)
                     time.sleep(0.4)
                     return
@@ -652,6 +687,7 @@ class LinkedInActivityScraper:
         time.sleep(self.gaussian_delay(4, 1.5))
         if not self.asegurar_sesion(profile_url, contexto=profile_url):
             return {}
+        expandir_ver_mas(self.driver)
         self.scroll_progresivo(n_scrolls=2, px=700)
 
         info = {"perfil": profile_url, "nombre": "", "titular": "", "ubicacion": "",
@@ -790,6 +826,12 @@ class LinkedInActivityScraper:
                             or "ha compartido esto" in cabecera
                             or "reposted" in cabecera
                             or "reposteo" in cabecera)
+                        n_img = 0
+                        try:
+                            n_img = len([im for im in post.find_elements(By.TAG_NAME, "img")
+                                         if (im.size or {}).get("width", 0) > 60])
+                        except Exception:
+                            n_img = 0
                         publicaciones.append({
                             'perfil': profile_url,
                             'urn': urn,
@@ -800,6 +842,8 @@ class LinkedInActivityScraper:
                             'autor': self.extraer_autor(post),
                             'texto': texto,
                             'tiempo': self.extraer_tiempo_publicacion(post),
+                            'n_imagenes': n_img,
+                            'tiene_imagenes': n_img > 0,
                             'hashtags': ";".join(self.extraer_hashtags(texto)),
                             'enlaces': ";".join(self.extraer_enlaces(post)),
                             'reacciones': reacciones,

@@ -452,15 +452,20 @@ def cmd_aprobar(args):
         with conn.cursor() as cur:
             if args.todos:
                 grupo = getattr(args, "grupo", "") or ""
+                from app.contenido import CATEGORIAS_CONTENIDO, excluidas_de_ficha
                 from app.redes_seguidas import CATEGORIAS_RED
                 if grupo == "red":
                     cur.execute("""UPDATE public.hechos_perfil SET activo = TRUE, fecha_actualizacion = now()
                                    WHERE activo = FALSE AND descartado = FALSE
                                      AND categoria = ANY(%s)""", (list(CATEGORIAS_RED),))
+                elif grupo == "contenido":
+                    cur.execute("""UPDATE public.hechos_perfil SET activo = TRUE, fecha_actualizacion = now()
+                                   WHERE activo = FALSE AND descartado = FALSE
+                                     AND categoria = ANY(%s)""", (list(CATEGORIAS_CONTENIDO),))
                 elif grupo == "ficha":
                     cur.execute("""UPDATE public.hechos_perfil SET activo = TRUE, fecha_actualizacion = now()
                                    WHERE activo = FALSE AND descartado = FALSE
-                                     AND NOT (categoria = ANY(%s))""", (list(CATEGORIAS_RED),))
+                                     AND NOT (categoria = ANY(%s))""", (excluidas_de_ficha(),))
                 else:
                     cur.execute("""UPDATE public.hechos_perfil SET activo = TRUE, fecha_actualizacion = now()
                                    WHERE activo = FALSE AND descartado = FALSE""")

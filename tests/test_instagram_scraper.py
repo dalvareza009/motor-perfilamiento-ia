@@ -37,6 +37,7 @@ def test_la_ficha_separa_familia_trabajo_estudios_y_quita_fechas():
     assert info["nombre"] == "Daniela Álvarez"
     assert info["seguidores"] == "1.543"
     assert "hija" in info["estado_civil"].lower()
+    assert "hija" in (info.get("familia") or info["estado_civil"]).lower()
     assert "autónoma" in info["experiencia"].lower()
     assert "Universidad EAFIT" in info["educacion"]
     assert "Medellín" in info["ubicacion"]
@@ -47,6 +48,28 @@ def test_la_ficha_separa_familia_trabajo_estudios_y_quita_fechas():
     productos = {p["titulo"] for p in sugerir_productos(hechos)}
     assert "Seguro de vida" in productos
     assert "Seguro educativo" in productos
+
+
+def test_la_bio_saca_profesion_hijos_y_otra_red():
+    info = parsear_ficha_instagram("""
+    ana
+    Ana Gómez
+    12
+    publicaciones
+    80
+    seguidores
+    40
+    seguidos
+    Mamá de Valentina
+    Emprendedora
+    Ingeniera civil
+    https://www.facebook.com/ana.gomez
+    """)
+    assert "valentina" in (info.get("familia") or info.get("estado_civil") or "").lower()
+    assert "emprendedora" in (info.get("experiencia") or "").lower()
+    assert "ingeniera" in (info.get("experiencia") or info.get("titular") or "").lower()
+    urls = [x["url"] for x in (info.get("otras_redes") or [])]
+    assert any("facebook.com" in u for u in urls)
 
 
 def test_la_bio_libre_queda_en_la_ficha():
@@ -90,11 +113,11 @@ def test_descripcion_y_repost_dejan_solo_lo_importante():
         "texto": ("Reposteó. Con mi hija celebramos su grado en la Universidad EAFIT. "
                   "Trabajo como analista en Global Seguros. Tengo 34 años."),
     }])
-    assert "hija" in info["familia"].lower()
-    assert "Universidad EAFIT" in info["educacion"]
-    assert "analista" in info["experiencia"].lower()
-    assert info["edad"] == "Tengo 34 años"
-    assert "Reposteó" not in " ".join(info.values())
+    assert "hija" not in (info.get("familia") or "").lower()
+    assert "Universidad EAFIT" not in (info.get("educacion") or "")
+    assert "analista" not in (info.get("experiencia") or "").lower()
+    assert "34" not in (info.get("edad") or "")
+    assert "Reposteó" not in " ".join(str(v) for v in info.values())
 
 
 def test_un_comentario_no_se_guarda_como_hecho_y_el_logro_si():
@@ -112,9 +135,9 @@ def test_un_comentario_no_se_guarda_como_hecho_y_el_logro_si():
         {"tipo": "compartida", "texto": "Con mi hija celebramos su grado en la Universidad EAFIT."},
     ])
     assert "hijo" not in (info.get("familia") or "").lower()
-    assert "hija" in info["familia"].lower()
-    assert "maestr" in info["logros"].lower()
-    assert "colegio" not in (info.get("educacion") or "").lower()
+    assert "hija" not in (info.get("familia") or "").lower()
+    assert "maestr" in (info.get("educacion") or info.get("estado_academico") or "").lower()
+    assert "colegio" not in (info.get("educacion") or "")
 
 
 def test_el_repost_del_catalogo_no_se_queda_fuera():

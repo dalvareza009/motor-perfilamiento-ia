@@ -31,7 +31,8 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 
-from linkedin_activity_scraper import LinkedInActivityScraper, extraer_red_de, parse_fecha_publicacion
+from linkedin_activity_scraper import (LinkedInActivityScraper, expandir_ver_mas, extraer_red_de,
+                                       parse_fecha_publicacion)
 from app.redes_seguidas import tope_publicaciones
 
 MARCAS_MURO_FB = ("/login", "checkpoint", "/recover", "/reg/")
@@ -65,13 +66,16 @@ _MESES = {"ene": 1, "enero": 1, "feb": 2, "febrero": 2, "mar": 3, "marzo": 3,
           "dic": 12, "diciembre": 12}
 _ROL_FAMILIA = re.compile(
     r"^(hermano|hermana|madre|padre|hijo|hija|esposo|esposa|abuelo|abuela|"
-    r"nieto|nieta|suegro|suegra|cuñado|cuñada|primo|prima)$", re.I)
+    r"nieto|nieta|suegro|suegra|cuñado|cuñada|primo|prima|"
+    r"t[ií]o|t[ií]a|yerno|nuera|padrastro|madrastra|sobrino|sobrina|"
+    r"compa[nñ]ero|compa[nñ]era)$", re.I)
 _CIVIL = re.compile(
     r"\b(casad[oa]|solter[oa]|divorciad[oa]|viud[oa]|uni[oó]n libre|"
     r"en una relaci[oó]n|comprometid[oa]|separad[oa])\b", re.I)
 _FAMILIA = re.compile(
     r"\b(hermano|hermana|madre|padre|hijo|hija|esposo|esposa|abuel[oa]|niet[oa]|"
-    r"suegr[oa]|cu[nñ]ad[oa]|familiar|mis padres|mi mam[áa]|mi pap[áa])\b", re.I)
+    r"suegr[oa]|cu[nñ]ad[oa]|t[ií]o|t[ií]a|yerno|nuera|padrastro|madrastra|"
+    r"sobrino|sobrina|familiar|mis padres|mi mam[áa]|mi pap[áa])\b", re.I)
 _ESTUDIOS = re.compile(
     r"\b(universidad|liceo|colegio|pregrado|posgrado|estudi[oó]|estudia|egresad[oa]|"
     r"asisti[oó] a)\b", re.I)
@@ -138,6 +142,61 @@ def _parece_nombre(texto):
         texto or ""))
 
 
+def _par_familia(rol, nombre):
+    rol = re.sub(r"\s+", " ", rol or "").strip()
+    nombre = re.sub(r"\s+", " ", nombre or "").strip()
+    if not rol or not nombre:
+        return ""
+    return f"{rol}: {nombre}"
+
+
+def pares_familia_facebook(texto):
+    """Familia etiquetada: Esposa: María, Hijo: Pedro, Tío: Carlos."""
+    pares, sueltos = [], []
+
+    def tomar(a, b):
+        if _ROL_FAMILIA.match(a) and _parece_nombre(b):
+            return _par_familia(a, b)
+        if _parece_nombre(a) and _ROL_FAMILIA.match(b):
+            return _par_familia(b, a)
+        return ""
+
+    for linea in str(texto or "").splitlines():
+        cruda = re.sub(r"\s+", " ", linea).strip()
+        if not cruda:
+            continue
+        if "·" in cruda:
+            piezas = [p.strip() for p in re.split(r"\s*·\s*", cruda) if p.strip()]
+            i = 0
+            while i < len(piezas):
+                b = piezas[i + 1] if i + 1 < len(piezas) else ""
+                par = tomar(piezas[i], b)
+                if par:
+                    pares.append(par)
+                    i += 2
+                else:
+                    sueltos.append(piezas[i])
+                    i += 1
+        else:
+            sueltos.append(cruda)
+    i = 0
+    while i < len(sueltos):
+        b = sueltos[i + 1] if i + 1 < len(sueltos) else ""
+        par = tomar(sueltos[i], b)
+        if par:
+            pares.append(par)
+            i += 2
+        else:
+            i += 1
+    vistos, salida = set(), []
+    for p in pares:
+        clave = p.lower()
+        if clave not in vistos:
+            vistos.add(clave)
+            salida.append(p)
+    return salida
+
+
 def parsear_ficha_facebook(cuerpo, hoy=None):
     """Solo datos personales: edad, estado civil, familia, profesión, empresa y estudios."""
     from app.perfil_redes import quitar_fechas_iso
@@ -154,11 +213,15 @@ def parsear_ficha_facebook(cuerpo, hoy=None):
         info["seguidores"] = re.sub(r"\s+", " ", m.group(1)).strip()
 
     vive, origen, trabajo, estudios, civil, familia = [], [], [], [], [], []
+    familia.extend(pares_familia_facebook(texto))
+    ya_familia = {p.lower() for par in familia for p in re.split(r":\s*", par)}
 
     def clasificar(t):
         t = quitar_fechas_iso(re.sub(r"\s+", " ", t).strip())
         bajo = t.lower().strip(" .")
         if not t or bajo in RUIDO_FICHA or re.match(r"^[\d.,]+\s*(amigos|seguidores)", bajo):
+            return
+        if bajo in ya_familia or _ROL_FAMILIA.match(t):
             return
         if re.match(r"^vive en\b", bajo):
             vive.append(t)
@@ -186,7 +249,8 @@ def parsear_ficha_facebook(cuerpo, hoy=None):
         i = 0
         while i < len(piezas):
             if _ROL_FAMILIA.match(piezas[i]) and i + 1 < len(piezas) and _parece_nombre(piezas[i + 1]):
-                clasificar(f"{piezas[i]} {piezas[i + 1]}")
+                i += 2
+            elif i + 1 < len(piezas) and _parece_nombre(piezas[i]) and _ROL_FAMILIA.match(piezas[i + 1]):
                 i += 2
             else:
                 clasificar(piezas[i])
@@ -226,8 +290,9 @@ def parsear_ficha_facebook(cuerpo, hoy=None):
     for clave, valor in list(info.items()):
         if isinstance(valor, str) and valor:
             info[clave] = quitar_fechas_iso(valor)
-    from app.perfil_redes import aplicar_lo_publicado
-    return aplicar_lo_publicado(info, [{"tipo": "publicacion", "texto": texto}])
+    from app.perfil_redes import anexar_otras_redes, aplicar_lo_publicado
+    info = anexar_otras_redes(info, texto, "facebook")
+    return aplicar_lo_publicado(info, [{"tipo": "publicacion", "texto": texto}], origen="ficha")
 
 
 def origen_compartida(cabecera, autor=""):
@@ -434,6 +499,7 @@ class FacebookActivityScraper:
             try:
                 self.driver.get(url)
                 time.sleep(3)
+                expandir_ver_mas(self.driver)
                 cuerpos.append(self.driver.find_element(By.TAG_NAME, "body").text or "")
             except Exception:
                 continue
@@ -460,7 +526,7 @@ class FacebookActivityScraper:
                 info["nombre"] = titulo[:120]
         parsed = parsear_ficha_facebook(cuerpo)
         for clave in ("titular", "ubicacion", "acerca", "experiencia", "educacion",
-                      "estado_civil", "familia", "edad", "seguidores", "bio"):
+                      "estado_civil", "familia", "edad", "seguidores", "bio", "otras_redes"):
             if parsed.get(clave) and not info.get(clave):
                 info[clave] = parsed[clave]
         bio_dom = self._leer_presentacion()
@@ -510,13 +576,15 @@ class FacebookActivityScraper:
                     continue
             for art in articulos:
                 try:
-                    texto = self.analisis._limpiar_texto(art.text, limite=2000)
-                    if len(texto) < 40:
+                    from app.contenido import texto_mostrable
+                    expandir_ver_mas(self.driver, art)
+                    texto, estado = texto_mostrable(self.analisis._limpiar_texto(art.text, limite=2000))
+                    if estado == "omitir" or (estado == "ok" and len(texto) < 40):
                         continue
                     # En el muro, comentarios ajenos salen en el mismo bloque. Si ya
                     # conocemos al dueño, solo se quedan piezas que lo mencionan arriba.
                     dueno = (self.info.get("nombre") or "").strip().lower()
-                    if dueno:
+                    if estado == "ok" and dueno:
                         cabecera_corta = "\n".join(texto.splitlines()[:3]).lower()
                         if dueno not in cabecera_corta:
                             continue
@@ -539,10 +607,17 @@ class FacebookActivityScraper:
                     compartida = es_compartida(cabecera)
                     if compartida:
                         autor = origen_compartida(cabecera, autor)
+                    n_img = 0
+                    try:
+                        n_img = len([im for im in art.find_elements(By.TAG_NAME, "img")
+                                     if (im.size or {}).get("width", 0) > 60])
+                    except Exception:
+                        n_img = 0
                     publicaciones.append({
                         'perfil': profile_url, 'urn': 'N/A', 'url_publicacion': '',
                         'tipo': 'compartida' if compartida else 'publicacion',
                         'autor': autor, 'texto': texto, 'tiempo': tiempo,
+                        'n_imagenes': n_img, 'tiene_imagenes': n_img > 0,
                         'hashtags': ";".join(self.analisis.extraer_hashtags(texto)),
                         'enlaces': '', 'reacciones': '', 'comentarios': '',
                         'fecha_extraccion': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -557,7 +632,9 @@ class FacebookActivityScraper:
             self.driver.execute_script("window.scrollBy(0, 1100);")
             time.sleep(2.5)
         vigentes = self.analisis.filtrar_y_ordenar(publicaciones)
+        from app.perfil_redes import aplicar_lo_publicado
         from app.redes_seguidas import aplicar_a_info
+        self.info = aplicar_lo_publicado(self.info, vigentes)
         self.info = aplicar_a_info(self.info, posts=vigentes)
         self.analisis.info_perfil[profile_url] = self.info
         print(f"  ✔ {len(vigentes)} dentro del último año "
@@ -575,12 +652,14 @@ class FacebookActivityScraper:
             try:
                 self.driver.get(url)
                 time.sleep(2.2)
+                expandir_ver_mas(self.driver)
                 cuerpos.append(self.driver.find_element(By.TAG_NAME, "body").text or "")
             except Exception:
                 continue
         cuerpo = "\n".join(cuerpos)
         info = {"nombre": "", "titular": "", "ubicacion": "", "acerca": "",
-                "experiencia": "", "educacion": "", "contacto": "", "contactos": []}
+                "experiencia": "", "educacion": "", "estado_civil": "", "familia": "",
+                "contacto": "", "contactos": []}
         bajo = cuerpo.lower()
         if any(m in bajo for m in NO_DISPONIBLE) and not cuerpos:
             info["acerca"] = "contenido no disponible para esta sesión"
@@ -592,7 +671,8 @@ class FacebookActivityScraper:
         except Exception:
             pass
         parsed = parsear_ficha_facebook(cuerpo)
-        for clave in ("nombre", "titular", "ubicacion", "acerca", "experiencia", "educacion", "edad"):
+        for clave in ("nombre", "titular", "ubicacion", "acerca", "experiencia", "educacion",
+                      "edad", "estado_civil", "familia", "otras_redes"):
             if parsed.get(clave) and not info.get(clave):
                 info[clave] = parsed[clave]
         info["contactos"] = contactos_de_texto(cuerpo)
@@ -613,7 +693,7 @@ class FacebookActivityScraper:
 
     def _urls_publicaciones_pagina(self, max_posts):
         vistos, orden = set(), []
-        for _ronda in range(8):
+        for _ronda in range(14):
             halladas = self.driver.execute_script("""
                 const arts = [...document.querySelectorAll("[role='article'], [aria-posinset]")];
                 return arts.map(art => {
@@ -637,22 +717,39 @@ class FacebookActivityScraper:
         return orden[:max_posts]
 
     def _expandir_comentarios(self):
-        for _ in range(8):
+        """Abre más comentarios y respuestas, no solo los que Facebook muestra primero."""
+        vistos = 0
+        sin_cambio = 0
+        for _ in range(20):
+            self.driver.execute_script("window.scrollBy(0, 900);")
             clic = self.driver.execute_script("""
                 const claves = ['ver más comentarios', 'ver mas comentarios', 'view more comments',
                                 'comentarios anteriores', 'previous comments',
-                                'ver todos los comentarios', 'view all comments'];
+                                'ver todos los comentarios', 'view all comments',
+                                'ver más respuestas', 'ver mas respuestas', 'view more replies',
+                                'ver respuestas', 'view replies',
+                                'ver más', 'ver mas', 'see more'];
                 const els = [...document.querySelectorAll('div[role="button"], span, a')];
                 for (const el of els) {
                   const t = (el.innerText || '').trim().toLowerCase();
-                  if (!t || t.length > 60) continue;
+                  if (!t || t.length > 90) continue;
                   if (claves.some(c => t === c || t.startsWith(c))) { el.click(); return t; }
                 }
                 return '';
             """)
-            if not clic:
-                break
-            time.sleep(1.3)
+            time.sleep(1.1)
+            n = self.driver.execute_script("""
+                return document.querySelectorAll('[aria-label^="Comentario de"], [aria-label^="Comment by"]').length;
+            """) or 0
+            if clic:
+                sin_cambio = 0
+            elif n <= vistos:
+                sin_cambio += 1
+                if sin_cambio >= 3:
+                    break
+            else:
+                sin_cambio = 0
+            vistos = n
 
     def _entradas_visibles(self, pagina_url, solo=""):
         raw = self.driver.execute_script("""
@@ -704,63 +801,66 @@ class FacebookActivityScraper:
         except Exception:
             pass
 
-    def _entradas_dialogo(self, pagina_url, tipo):
+    def _entradas_dialogo(self, pagina_url, tipo, reaccion=""):
         raw = self.driver.execute_script("""
             const tipo = arguments[0];
+            const reaccion = arguments[1] || '';
             const d = document.querySelector('[role="dialog"]');
             if (!d) return [];
             const out = [];
             for (const a of d.querySelectorAll('a[href]')) {
               const nombre = (a.innerText || a.getAttribute('aria-label') || '')
                 .trim().split('\\n')[0];
-              if (nombre && a.href) out.push({href: a.href, nombre, tipo, texto: ''});
+              if (nombre && a.href) out.push({href: a.href, nombre, tipo, reaccion, texto: ''});
             }
             return out;
-        """, tipo) or []
+        """, tipo, reaccion) or []
         return [{
             "href": item.get("href"),
             "nombre": item.get("nombre"),
             "tipo": tipo,
+            "reaccion": item.get("reaccion") or reaccion,
             "texto": "",
             "pagina": pagina_url,
         } for item in raw]
 
+    def _abrir_dialogo(self, primero, segundo):
+        return self.driver.execute_script("""
+            const primero = new RegExp(arguments[0], 'i');
+            const segundo = new RegExp(arguments[1], 'i');
+            const labs = [...document.querySelectorAll('[aria-label], [role="button"]')];
+            for (const el of labs) {
+              const t = (el.getAttribute('aria-label') || el.innerText || '');
+              if (primero.test(t) && t.length < 90) { el.click(); return t; }
+            }
+            for (const el of labs) {
+              const t = (el.getAttribute('aria-label') || '');
+              if (t.length < 90 && /\\d/.test(t) && segundo.test(t)) { el.click(); return t; }
+            }
+            return '';
+        """, primero, segundo)
+
+    def _scroll_dialogo(self):
+        for _ in range(10):
+            self.driver.execute_script("""
+                const d = document.querySelector('[role="dialog"]');
+                if (!d) return;
+                const sc = [...d.querySelectorAll('*')].find(n => n.scrollHeight > n.clientHeight + 40) || d;
+                sc.scrollTop = sc.scrollHeight;
+            """)
+            time.sleep(0.8)
+
     def _dialogo_de_post(self, pagina_url, tipo):
-        """Abre el listado de me gusta o de shares y saca los perfiles."""
-        if tipo == "compartido":
-            primero = r"quién compartió|quien compartio|see who shared|ver quiénes compartieron|ver quienes compartieron"
-            segundo = r"compartidos|shares|veces compart|shared this"
-        else:
-            primero = r"ver quién reaccionó|ver quien reacciono|see who reacted|todas las reacciones|all reactions"
-            segundo = r"me gusta|like|reaccion"
-            tipo = "like"
+        """Abre el listado de shares y saca los perfiles."""
+        primero = r"quién compartió|quien compartio|see who shared|ver quiénes compartieron|ver quienes compartieron"
+        segundo = r"compartidos|shares|veces compart|shared this"
         try:
-            clic = self.driver.execute_script("""
-                const primero = new RegExp(arguments[0], 'i');
-                const segundo = new RegExp(arguments[1], 'i');
-                const labs = [...document.querySelectorAll('[aria-label], [role="button"]')];
-                for (const el of labs) {
-                  const t = (el.getAttribute('aria-label') || el.innerText || '');
-                  if (primero.test(t) && t.length < 90) { el.click(); return t; }
-                }
-                for (const el of labs) {
-                  const t = (el.getAttribute('aria-label') || '');
-                  if (t.length < 90 && /\\d/.test(t) && segundo.test(t)) { el.click(); return t; }
-                }
-                return '';
-            """, primero, segundo)
+            clic = self._abrir_dialogo(primero, segundo)
             if not clic:
                 return []
             time.sleep(2)
-            for _ in range(5):
-                self.driver.execute_script("""
-                    const d = document.querySelector('[role="dialog"]');
-                    if (!d) return;
-                    const sc = [...d.querySelectorAll('*')].find(n => n.scrollHeight > n.clientHeight + 40) || d;
-                    sc.scrollTop = sc.scrollHeight;
-                """)
-                time.sleep(0.8)
-            entradas = self._entradas_dialogo(pagina_url, tipo)
+            self._scroll_dialogo()
+            entradas = self._entradas_dialogo(pagina_url, "compartido")
             self._cerrar_dialogo()
             return entradas
         except Exception as e:
@@ -768,10 +868,64 @@ class FacebookActivityScraper:
             self._cerrar_dialogo()
             return []
 
+    def _reacciones_del_post(self, pagina_url):
+        """Abre el diálogo de reacciones y lee positivas (Me gusta, Me encanta…) y negativas (Me enoja, Me entristece)."""
+        from app.facebook_pagina import clasificar_reaccion
+
+        primero = r"ver quién reaccionó|ver quien reacciono|see who reacted|todas las reacciones|all reactions"
+        segundo = r"me gusta|like|reaccion|encanta|enoj"
+        try:
+            clic = self._abrir_dialogo(primero, segundo)
+            if not clic:
+                return []
+            time.sleep(2)
+            pestanas = self.driver.execute_script("""
+                const d = document.querySelector('[role="dialog"]');
+                if (!d) return [];
+                const out = [];
+                const vistos = new Set();
+                for (const el of d.querySelectorAll('[role="tab"], [aria-label], [role="button"]')) {
+                  const t = (el.getAttribute('aria-label') || el.innerText || '').trim();
+                  if (!t || t.length > 80 || vistos.has(t.toLowerCase())) continue;
+                  if (!/gusta|encanta|importa|divierte|asombr|enoj|entriste|like|love|care|haha|wow|angry|sad/i.test(t)) continue;
+                  if (/todas las reacciones|all reactions/i.test(t)) continue;
+                  vistos.add(t.toLowerCase());
+                  out.push(t);
+                }
+                return out;
+            """) or []
+            entradas = []
+            if pestanas:
+                for etiqueta in pestanas:
+                    polaridad, nombre = clasificar_reaccion(etiqueta)
+                    self.driver.execute_script("""
+                        const d = document.querySelector('[role="dialog"]');
+                        if (!d) return;
+                        const buscado = (arguments[0] || '').toLowerCase();
+                        for (const el of d.querySelectorAll('[role="tab"], [aria-label], [role="button"]')) {
+                          const t = (el.getAttribute('aria-label') || el.innerText || '').trim().toLowerCase();
+                          if (t && t.indexOf(buscado.slice(0, 10)) >= 0) { el.click(); return; }
+                        }
+                    """, etiqueta)
+                    time.sleep(1.2)
+                    self._scroll_dialogo()
+                    entradas.extend(self._entradas_dialogo(pagina_url, polaridad, nombre))
+                    print(f"    · {nombre}: {sum(1 for e in entradas if e.get('reaccion') == nombre)} persona(s)")
+            else:
+                self._scroll_dialogo()
+                entradas = self._entradas_dialogo(pagina_url, "positiva", "Me gusta")
+            self._cerrar_dialogo()
+            return entradas
+        except Exception as e:
+            print(f"  ⚠ No se leyeron las reacciones: {e}")
+            self._cerrar_dialogo()
+            return []
+
     def extraer_interactuantes_pagina(self, page_url, max_posts=5, max_personas=30, tarea=None):
-        """Likes y comentarios de las publicaciones de una página, con ficha de contacto."""
+        """Comentarios y reacciones de personas que aún no están en la base."""
         from app.facebook_pagina import (TOPE_PERSONAS, acercamiento, clasificar_url_pagina,
-                                         formatear_contacto, fusionar, persistir,
+                                         claves_en_base, es_conocida, formatear_contacto,
+                                         fusionar, persistir, separar_nuevas,
                                          url_perfil_facebook)
 
         page_url = clasificar_url_pagina(page_url)
@@ -779,12 +933,15 @@ class FacebookActivityScraper:
             return {"ok": False, "motivo": "Indica la URL de una página de Facebook."}
         max_posts = max(1, min(int(max_posts or 5), 10))
         max_personas = max(1, min(int(max_personas or 30), TOPE_PERSONAS))
+        conocidas = claves_en_base(page_url)
         print(f"\n📄 Página de Facebook: {page_url}")
+        print(f"  Ya hay {len(conocidas)} persona(s) en la base. Se buscan perfiles nuevos.")
         self.driver.get(page_url)
         time.sleep(4)
         nombre_pagina = self._nombre_pagina() or page_url.rsplit("/", 1)[-1]
         print(f"  {nombre_pagina}")
-        posts = self._urls_publicaciones_pagina(max_posts)
+        cupo_posts = min(max(max_posts * 3, max_posts), 20)
+        posts = self._urls_publicaciones_pagina(cupo_posts)
         if not posts:
             print("  ⚠ No se vieron publicaciones. ¿La sesión puede ver la página?")
         personas, vistos_evento = [], set()
@@ -793,18 +950,25 @@ class FacebookActivityScraper:
 
         def mezclar(extra, publicacion=""):
             pub = publicacion or ""
+            nuevas_aqui = 0
             for item in extra:
                 perfil = url_perfil_facebook(item.get("href") or item.get("perfil") or "", page_url)
-                clave = (perfil, item.get("tipo"), pub[:80], (item.get("texto") or "")[:80])
+                clave = (perfil, item.get("tipo"), item.get("reaccion") or "", pub[:80], (item.get("texto") or "")[:80])
                 if not perfil or clave in vistos_evento:
                     continue
                 vistos_evento.add(clave)
+                era_nueva = not es_conocida(perfil, conocidas) and not any(
+                    p.get("perfil") == perfil for p in personas)
                 fusionar(personas, {
                     **item,
                     "pagina": page_url,
                     "publicacion": pub,
                 })
+                if era_nueva:
+                    nuevas_aqui += 1
+            return nuevas_aqui
 
+        leidas = 0
         for i, post in enumerate(posts, 1):
             if tarea and getattr(tarea, "cancelada", False):
                 print("Detenida.")
@@ -816,45 +980,57 @@ class FacebookActivityScraper:
             except Exception as e:
                 print(f"  ⚠ No se abrió la publicación: {e}")
                 continue
+            leidas += 1
             self._expandir_comentarios()
-            mezclar(self._entradas_visibles(page_url, solo="comentario"), post.get("texto") or "")
-            mezclar(self._dialogo_de_post(page_url, "like"), post.get("texto") or "")
-            mezclar(self._dialogo_de_post(page_url, "compartido"), post.get("texto") or "")
+            n_com = mezclar(self._entradas_visibles(page_url, solo="comentario"), post.get("texto") or "")
+            n_reac = mezclar(self._reacciones_del_post(page_url), post.get("texto") or "")
+            n_share = mezclar(self._dialogo_de_post(page_url, "compartido"), post.get("texto") or "")
+            print(f"    nuevas en esta publicación: {n_com + n_reac + n_share}")
+            nuevas_ahora, _ = separar_nuevas(personas, conocidas)
             if tarea:
                 tarea.avance(i, len(posts) + max_personas)
+            if len(nuevas_ahora) >= max_personas:
+                print(f"  Cupo de fichas nuevas ({len(nuevas_ahora)}); se siguen guardando URLs y comentarios.")
 
-        personas.sort(key=lambda p: (p["comentarios"], p.get("compartidos") or 0, p["likes"]), reverse=True)
-        print(f"  {len(personas)} persona(s) distintas. Ficha de las primeras {min(len(personas), max_personas)}.")
-        for i, p in enumerate(personas):
+        nuevas, repetidas = separar_nuevas(personas, conocidas)
+        nuevas.sort(key=lambda p: (p["comentarios"], p.get("reacciones_neg") or 0,
+                                   p.get("compartidos") or 0, p["likes"]), reverse=True)
+        print(f"  {len(personas)} vista(s): {len(nuevas)} nueva(s) a fichar, {len(repetidas)} ya en la base (se conservan URLs y comentarios).")
+        a_fichar = nuevas[:max_personas]
+        for i, p in enumerate(a_fichar):
             if tarea and getattr(tarea, "cancelada", False):
                 break
-            if i < max_personas:
-                print(f"  Ficha {i + 1}/{min(len(personas), max_personas)}: {p.get('nombre') or p['perfil']}")
-                try:
-                    info = self.extraer_ficha_corta(p["perfil"])
-                except Exception as e:
-                    print(f"  ⚠ No se leyó la ficha: {e}")
-                    info = {}
-                if info.get("nombre"):
-                    p["nombre"] = info["nombre"]
-                p["ficha"] = info.get("acerca") or info.get("titular") or p.get("ficha") or ""
-                p["ubicacion"] = info.get("ubicacion") or ""
-                p["contacto"] = info.get("contacto") or formatear_contacto(info, p["perfil"])
-                if tarea:
-                    tarea.avance(len(posts) + i + 1, len(posts) + max_personas)
+            print(f"  Ficha nueva {i + 1}/{len(a_fichar)}: {p.get('nombre') or p['perfil']}")
+            try:
+                info = self.extraer_ficha_corta(p["perfil"])
+            except Exception as e:
+                print(f"  ⚠ No se leyó la ficha: {e}")
+                info = {}
+            if info.get("nombre"):
+                p["nombre"] = info["nombre"]
+            p["info"] = info
+            p["ficha"] = info.get("acerca") or info.get("titular") or p.get("ficha") or ""
+            p["ubicacion"] = info.get("ubicacion") or ""
+            p["contacto"] = info.get("contacto") or formatear_contacto(info, p["perfil"])
+            if tarea:
+                tarea.avance(len(posts) + i + 1, len(posts) + max_personas)
+        for p in personas:
             if not p.get("contacto"):
-                p["contacto"] = formatear_contacto({}, p["perfil"])
+                p["contacto"] = formatear_contacto({}, p.get("perfil") or "")
             p["acercamiento"] = acercamiento(p, nombre_pagina)
 
         n = persistir(page_url, nombre_pagina, personas)
-        print(f"  Guardadas {n} persona(s) que interactuaron con {nombre_pagina}.")
+        print(f"  Conservadas {n} URL(s) de {nombre_pagina} (fichas nuevas: {len(a_fichar)}).")
         return {
             "ok": True,
             "pagina": page_url,
             "pagina_nombre": nombre_pagina,
-            "publicaciones": len(posts),
-            "personas": personas,
+            "publicaciones": leidas,
+            "personas": a_fichar,
             "guardados": n,
+            "nuevas": len(a_fichar),
+            "omitidas_ya_en_base": len(repetidas),
+            "urls_conservadas": n,
         }
 
     # ---------- ejecución ----------

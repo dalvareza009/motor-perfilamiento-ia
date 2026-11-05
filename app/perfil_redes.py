@@ -12,20 +12,36 @@ EMAIL = re.compile(r"\b[\w.+-]+@[\w.-]+\.\w+\b")
 TELEFONO = re.compile(r"(?:\+?\d[\d\s().-]{7,}\d)")
 
 FAMILIA = re.compile(
-    r"\b(soy madre|soy padre|madre de|padre de|mama de|papa de|mi hijo|mi hija|mis hijos|mis hijas|"
-    r"tengo un hijo|tengo una hija|tengo hijos|esposo|esposa|mi pareja|casad[oa]|"
-    r"mi hermano|mi hermana|mi madre|mi padre|mis padres|mi mama|mi papa)\b"
+    r"\b(soy madre|soy padre|madre de|padre de|mama de|papa de|mam[aá] de|pap[aá] de|"
+    r"mi hijo|mi hija|mis hijos|mis hijas|tengo un hijo|tengo una hija|tengo hijos|"
+    r"esposo|esposa|mi pareja|casad[oa]|mi hermano|mi hermana|mi madre|mi padre|"
+    r"mis padres|mi mama|mi papa|mi tio|mi tia|t[ií]o|t[ií]a|yerno|nuera|"
+    r"padrastro|madrastra|sobrino|sobrina)\b"
 )
 ESTUDIOS = re.compile(
-    r"\b(estudie|estudio|estudiante|universidad|egresad|maestr|especializ|bachiller|colegio|"
-    r"formacion|pregrado|posgrado|student|university|college)\b"
+    r"\b(estudie|estudio|estudiante|universidad|egresad\w*|maestr\w*|especializ\w*|bachiller\w*|"
+    r"colegio|formacion|pregrado|posgrado|student|university|college)\b"
 )
 TRABAJO_VERBO = re.compile(
-    r"\b(trabajo|trabaja|trabaje|empleo|cargo|experiencia laboral|actualmente)\b"
+    r"\b(trabajo|trabaja|trabaje|empleo|cargo|experiencia laboral|actualmente|"
+    r"me dedico|emprendo)\b"
 )
 TRABAJO_CARGO = re.compile(
-    r"\b(analista|gerente|coordinador|coordinadora|asesor|asesora|docente|abogad|desarrollador|"
-    r"desarrolladora|contador|contadora|medic|enfermer|ingenier)\b"
+    r"\b(analista|gerente|coordinador[ae]?|asesor[ae]?|docente|abogad[oa]|desarrollador[ae]?|"
+    r"contador[ae]?|medic[oa]|enfermer[oa]|ingenier[oa]|emprendedor[ae]?|"
+    r"empresari[oa]|profesional|coach|chef|comerciante)\b"
+)
+_YO_TRABAJO = re.compile(
+    r"\b(trabajo (?:en|como|de)|soy (?:emprendedor[ae]?|independiente|autonom[oa]|"
+    r"analista|gerente|coordinador[ae]?|asesor[ae]?|docente|abogad[oa]|"
+    r"desarrollador[ae]?|contador[ae]?|medic[oa]|enfermer[oa]|ingenier[oa]|"
+    r"empresari[oa]|profesional|coach|chef|comerciante)|me dedico)\b"
+)
+_YO_ESTUDIOS = re.compile(
+    r"\b(me gradue|soy graduad|egres[ée]|estudie|soy estudiante|"
+    r"recien graduad|recien egresad|"
+    r"termine (?:la |el )?(?:carrera|maestr\w*|pregrado|universidad|colegio)|"
+    r"logr\w*.{0,40}(maestr\w*|titulo|carrera|pregrado|universidad))\b"
 )
 UBICACION = re.compile(r"\b(vivo en|vive en|viviendo en|resido|ubicad|me mude|radicad)\b")
 ESTADO_CIVIL = re.compile(
@@ -133,6 +149,52 @@ def clasificar_url(url):
     return None
 
 
+_URL_EN_TEXTO = re.compile(r"https?://[^\s)>\]]+", re.I)
+_NOMBRE_RED = {
+    "instagram": "Instagram", "facebook": "Facebook", "x": "X",
+    "linkedin": "LinkedIn", "tiktok": "TikTok",
+}
+
+
+def detectar_otras_redes(texto, red_actual="", url_actual=""):
+    """Perfiles de otra red (o de la misma con otro usuario) escritos o enlazados."""
+    actual = (url_actual or "").rstrip("/").lower()
+    red_actual = (red_actual or "").lower()
+    halladas, vistos = [], set()
+    for m in _URL_EN_TEXTO.finditer(texto or ""):
+        cruda = m.group(0).rstrip(".,);'\"")
+        clasificada = clasificar_url(cruda)
+        if not clasificada:
+            continue
+        red, limpia = clasificada
+        clave = (red, limpia.rstrip("/").lower())
+        if clave in vistos or clave[1] == actual:
+            continue
+        vistos.add(clave)
+        halladas.append({"red": red, "url": limpia})
+    return halladas
+
+
+def anexar_otras_redes(info, texto, red_actual="", url_actual=""):
+    info = dict(info or {})
+    previas = list(info.get("otras_redes") or [])
+    vistos = {(x.get("red"), str(x.get("url") or "").rstrip("/").lower()) for x in previas}
+    for item in detectar_otras_redes(texto, red_actual, url_actual):
+        clave = (item["red"], item["url"].rstrip("/").lower())
+        if clave in vistos:
+            continue
+        vistos.add(clave)
+        previas.append(item)
+    info["otras_redes"] = previas
+    return info
+
+
+def nota_otra_red(item):
+    red = _NOMBRE_RED.get((item or {}).get("red"), (item or {}).get("red") or "otra red")
+    url = (item or {}).get("url") or ""
+    return f"Hay un perfil de {red} para scrapear: {url}"
+
+
 def cargar_autorizados(lista):
     """-> (personas, avisos). Cada persona trae solo URLs de perfil público y autorizado=true."""
     personas, avisos = [], []
@@ -203,7 +265,9 @@ def _oraciones(texto):
 
 
 def categorias_oracion(texto, seccion=None):
-    if _descartar(texto) or len(texto) < MIN_CHARS:
+    n_previo = _n(texto)
+    corto_util = bool(FAMILIA.search(n_previo) or TRABAJO_CARGO.search(n_previo) or ESTADO_CIVIL.search(n_previo))
+    if _descartar(texto) or (len(texto) < MIN_CHARS and not corto_util):
         return []
     n = _n(texto)
     cats = []
@@ -296,30 +360,53 @@ def edad_de_frase(frase, hoy=None):
     return ""
 
 
-def aplicar_frase(info, frase, hoy=None):
-    """Suma a la ficha lo que una frase propia dice de edad, estado civil, lugar, trabajo o estudios."""
+_CAMPOS_NO_PUBLICACION = frozenset({
+    "experiencia", "educacion", "estado_laboral", "estado_academico",
+})
+
+
+def aplicar_frase(info, frase, hoy=None, desde_publicacion=False):
+    """Suma a la ficha lo que una frase propia dice de familia, trabajo o estudios.
+
+    En una publicación solo se copia si la persona habla en primera persona
+    (trabajo en, me gradué, mamá de). Una mención suelta de universidad o cargo no.
+    """
     frase = quitar_fechas_iso(re.sub(r"\s+", " ", frase or "").strip(" ."))
     if len(frase) < 8 or _descartar(frase):
         return info
+    n = _n(frase)
     edad = edad_de_frase(frase, hoy)
     if edad:
-        texto = frase if _EDAD_TEXTO.search(_n(frase)) else f"{edad} ({frase})"
+        texto = frase if _EDAD_TEXTO.search(n) else f"{edad} ({frase})"
         _anexar_campo(info, "edad", texto)
     for cat in categorias_oracion(frase):
         campo = _CAMPOS_FRASE.get(cat)
-        if campo and campo != "edad":
-            _anexar_campo(info, campo, frase)
+        if not campo or campo == "edad":
+            continue
+        if desde_publicacion and campo in _CAMPOS_NO_PUBLICACION:
+            if campo in ("experiencia", "estado_laboral") and not (
+                    _YO_TRABAJO.search(n) or ESTADO_LABORAL.search(n)):
+                continue
+            if campo in ("educacion", "estado_academico") and not (
+                    _YO_ESTUDIOS.search(n) or ESTADO_ACADEMICO.search(n)):
+                continue
+        _anexar_campo(info, campo, frase)
     return info
 
 
-def aplicar_lo_publicado(info, posts, hoy=None):
-    """Lee publicaciones propias (no reposts ni comentarios) y completa la ficha."""
+def aplicar_lo_publicado(info, posts, hoy=None, origen="publicacion"):
+    """De una publicación propia completa familia, trabajo, estudios y lugar.
+
+    En el feed solo entra lo dicho en primera persona. La ficha (origen='ficha')
+    sí copia el cargo o el título tal como está escrito en el perfil.
+    """
     info = dict(info or {})
+    desde_publicacion = origen != "ficha"
     for post in posts or []:
         if (post.get("tipo") or "publicacion") == "compartida":
             continue
         for oracion in _oraciones(post.get("texto") or ""):
-            aplicar_frase(info, oracion, hoy)
+            aplicar_frase(info, oracion, hoy, desde_publicacion=desde_publicacion)
     return info
 
 

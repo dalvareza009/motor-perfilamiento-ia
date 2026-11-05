@@ -31,7 +31,8 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 
 from instagram_activity_scraper import tiempo_legible
-from linkedin_activity_scraper import LinkedInActivityScraper, extraer_red_de, parse_fecha_publicacion
+from linkedin_activity_scraper import (LinkedInActivityScraper, expandir_ver_mas, extraer_red_de,
+                                       parse_fecha_publicacion)
 from app.redes_seguidas import elegir_publicaciones, tope_publicaciones
 
 MARCAS_MURO_X = ("/i/flow/login", "/login", "/i/flow/signup", "/account/access")
@@ -135,43 +136,23 @@ def resumir_interacciones(posts):
 
 
 def incorporar_datos_importantes(info, posts):
-    """De cada publicación, respuesta o logro se queda lo que describe a la persona."""
+    """De una publicación propia: familia, edad y ciudad. Estudios, cargos y logros van a contenido."""
     from app import linkedin_texto
-    from app.perfil_redes import _n, categorias_oracion, quitar_fechas_iso
+    from app.perfil_redes import aplicar_lo_publicado
 
     info = dict(info or {})
-    logros = [info.get("logros") or ""]
+    propios = []
     for post in posts or []:
         texto = post.get("texto") or ""
         if not texto or post.get("tipo") == "compartida" or linkedin_texto.evaluar_publicacion(texto)["omitida"]:
             continue
-        for oracion in re.split(r"(?<=[.!?])\s+|\n", texto):
-            frase = quitar_fechas_iso(re.sub(r"\s+", " ", oracion).strip(" ."))
-            if not frase or (es_repost(frase) and len(frase) < 40):
-                continue
-            if es_logro(frase) and _n(frase) and _n(frase) not in _n(" ".join(logros)):
-                logros.append(frase)
-            for cat in categorias_oracion(frase):
-                campo = {"Familia": "familia", "Edad": "edad", "Trabajo": "experiencia",
-                         "Estudios": "educacion", "Ubicacion": "ubicacion"}.get(cat)
-                if not campo:
-                    continue
-                actual = info.get(campo) or ""
-                if _n(frase) and _n(frase) not in _n(actual):
-                    info[campo] = ". ".join(p for p in (actual, frase) if p)
-    info["logros"] = ". ".join(p for p in logros if p)
-    if not info.get("titular") and info.get("experiencia"):
-        info["titular"] = info["experiencia"].split(". ")[0][:300]
-    from app.perfil_redes import aplicar_lo_publicado
-    propios = [p for p in (posts or [])
-               if not linkedin_texto.evaluar_publicacion(p.get("texto") or "")["omitida"]]
-    info = aplicar_lo_publicado(info, propios)
-    return info
+        propios.append(post)
+    return aplicar_lo_publicado(info, propios)
 
 
 def parsear_ficha_x(datos, nombre_conocido=""):
     """Nombre, bio, ubicación, trabajo, estudios, familia y logros del encabezado."""
-    from app.perfil_redes import aplicar_lo_publicado, quitar_fechas_iso
+    from app.perfil_redes import anexar_otras_redes, aplicar_lo_publicado, quitar_fechas_iso
 
     datos = datos or {}
     if isinstance(datos, str):
@@ -213,13 +194,17 @@ def parsear_ficha_x(datos, nombre_conocido=""):
     for linea in lineas.splitlines():
         t = quitar_fechas_iso(re.sub(r"\s+", " ", linea).strip())
         bajo = t.lower().strip(" .•·")
-        if not t or bajo in RUIDO_FICHA or t.lower().startswith("http"):
+        if not t or bajo in RUIDO_FICHA:
             continue
-        if "x.com" in bajo or "twitter.com" in bajo:
+        if t.lower().startswith("http") or "x.com" in bajo or "twitter.com" in bajo or "instagram.com" in bajo or "facebook.com" in bajo or "linkedin.com" in bajo:
+            info = anexar_otras_redes(info, t, "x")
             continue
         if re.search(r"\bcasad[oa]\b|\bespos[oa]\b|\bmam[áa]\b|\bpap[áa]\b|\bhij[oa]s?\b|\bherman[oa]\b", bajo):
             civil.append(t)
-        elif re.search(r"\b(aut[oó]nom[oa]|independiente|trabaja en|empleado|docente|profesor|ingenier[oa]|analista)\b", bajo):
+        elif re.search(
+                r"\b(aut[oó]nom[oa]|independiente|emprendedor[ae]?|trabaja en|"
+                r"empleado|docente|profesor|ingenier[oa]|abogad[oa]|analista|"
+                r"gerente|profesional)\b", bajo):
             trabajo.append(t)
             if re.search(r"\b(universidad|colegio|liceo)\b", bajo):
                 estudios.append(t)
@@ -262,7 +247,9 @@ def parsear_ficha_x(datos, nombre_conocido=""):
     for clave, valor in list(info.items()):
         if isinstance(valor, str) and valor:
             info[clave] = quitar_fechas_iso(valor)
-    return aplicar_lo_publicado(info, [{"tipo": "publicacion", "texto": info.get("acerca") or ""}])
+    info = anexar_otras_redes(info, "\n".join(filter(None, [str(datos.get("bio") or ""), cuerpo])), "x")
+    return aplicar_lo_publicado(info, [{"tipo": "publicacion", "texto": info.get("acerca") or ""}],
+                               origen="ficha")
 
 
 def armar_publicacion(item, profile_url, autor="", tipo_forzado=""):
@@ -549,11 +536,11 @@ class XActivityScraper:
         return info
 
     def _expandir_textos(self):
+        expandir_ver_mas(self.driver)
         try:
             self.driver.execute_script("""
-                for (const n of document.querySelectorAll('[data-testid="tweet-text-show-more-link"], [role="button"]')) {
-                    const t = (n.innerText || '').trim().toLowerCase();
-                    if (t === 'mostrar más' || t === 'show more' || t === 'ver más') n.click();
+                for (const n of document.querySelectorAll('[data-testid="tweet-text-show-more-link"]')) {
+                    try { n.click(); } catch (e) {}
                 }
             """)
         except Exception:

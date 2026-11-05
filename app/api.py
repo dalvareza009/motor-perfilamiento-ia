@@ -25,9 +25,9 @@ from psycopg2 import sql
 from pydantic import BaseModel, ConfigDict, Field
 
 from app import tareas  # noqa: I001  (primero: instala la captura de lo que imprimen los comandos)
-from app import (asesor, conocimiento, deduplicacion, embeddings, facebook_pagina, governance, ingesta_actividad,
-                 ingesta_linkedin, ingesta_perfiles, ingesta_web, mensajes, ollama_client, perfil_redes, redes_seguidas,
-                 runtime_nube, segmentos, sesion_token, vectorizar)
+from app import (asesor, conocimiento, contenido, deduplicacion, embeddings, facebook_pagina, governance,
+                 ingesta_actividad, ingesta_linkedin, ingesta_perfiles, ingesta_web, mensajes, ollama_client,
+                 perfil_redes, redes_seguidas, runtime_nube, segmentos, sesion_token, vectorizar)
 from app import main as flujo_perfil
 from app.database import get_connection
 
@@ -990,7 +990,8 @@ def mensajes_prueba_lista(s=Depends(sesion)):
 def perfiles_personas(s=Depends(sesion)):
     exigir(s, "admin_perfiles")
     ingesta_perfiles.asegurar_tabla()
-    cats = list(redes_seguidas.CATEGORIAS_RED)
+    cats = contenido.excluidas_de_ficha()
+    cats_red = list(redes_seguidas.CATEGORIAS_RED)
     return _consulta("""SELECT nombre, MAX(clave_cliente) AS clave_cliente,
                                COUNT(*) FILTER (WHERE NOT activo AND NOT descartado
                                     AND categoria <> ALL(%s)) AS pendientes,
@@ -1001,7 +1002,7 @@ def perfiles_personas(s=Depends(sesion)):
                                STRING_AGG(DISTINCT red, ', ') AS redes,
                                MAX(fecha_actualizacion) AS actualizado
                         FROM public.hechos_perfil GROUP BY nombre ORDER BY nombre""",
-                     (cats, cats))
+                     (cats, cats_red))
 
 
 class FiltroHechos(BaseModel):
@@ -1018,13 +1019,17 @@ def perfiles_hechos(datos: FiltroHechos, s=Depends(sesion)):
     nombre = datos.nombre.strip()
     where = {"pendiente": "NOT activo AND NOT descartado", "aprobado": "activo",
              "descartado": "descartado AND NOT activo"}.get(datos.estado, "TRUE")
-    cats = list(redes_seguidas.CATEGORIAS_RED)
+    cats_red = list(redes_seguidas.CATEGORIAS_RED)
+    cats_fuera = contenido.excluidas_de_ficha()
     if datos.grupo == "red":
         where += " AND categoria = ANY(%s)"
-        params = (cats, nombre, nombre, datos.limite)
+        params = (cats_red, nombre, nombre, datos.limite)
+    elif datos.grupo == "contenido":
+        where += " AND categoria = ANY(%s)"
+        params = (list(contenido.CATEGORIAS_CONTENIDO), nombre, nombre, datos.limite)
     else:
         where += " AND NOT (categoria = ANY(%s))"
-        params = (cats, nombre, nombre, datos.limite)
+        params = (cats_fuera, nombre, nombre, datos.limite)
     return _consulta(f"""SELECT id_hecho, nombre, clave_cliente, red, fuente_url, categoria, titulo, contenido,
                                 activo, descartado, fecha_actualizacion
                          FROM public.hechos_perfil
@@ -1051,6 +1056,19 @@ def perfiles_aprobar(datos: Seleccion, s=Depends(sesion)):
 def perfiles_descartar(datos: Seleccion, s=Depends(sesion)):
     exigir(s, "admin_perfiles")
     return _correr_comando(ingesta_perfiles.cmd_descartar, argparse.Namespace(ids=datos.ids, usuario=s["usuario"]))
+
+
+class FiltroContenido(BaseModel):
+    nombre: str = ""
+    red: str = ""
+    limite: int = Field(default=500, ge=1, le=2000)
+
+
+@app.post("/api/perfiles/contenido")
+def perfiles_contenido(datos: FiltroContenido, s=Depends(sesion)):
+    """Publicaciones de todas las redes de las personas a las que se les hizo scraping."""
+    exigir(s, "admin_perfiles")
+    return contenido.listar(nombre=datos.nombre, red=datos.red, limite=datos.limite)
 
 
 class NombrePersona(BaseModel):
@@ -1266,15 +1284,12 @@ def _procesar_con_bot(red, bot, url, max_posts, usuario, redactar=True):
         info = bot.extraer_informacion_perfil(url)
         posts = bot.extraer_publicaciones_perfil(url, max_posts=max_posts)
         info = bot.info_perfil.get(url) or info
-        from app import linkedin_texto
         ficha = "\n".join(p for p in (
             info.get("titular"), info.get("bio"), info.get("acerca"), info.get("experiencia"),
             info.get("educacion"), info.get("ubicacion"),
             info.get("paginas_seguidas"), info.get("interacciones")) if p)
-        visibles = [p for p in posts
-                    if not linkedin_texto.evaluar_publicacion(p.get("texto") or "")["omitida"]]
         info = perfil_redes.aplicar_lo_publicado(
-            info, [{"tipo": "publicacion", "texto": ficha}, *visibles])
+            info, [{"tipo": "publicacion", "texto": ficha}], origen="ficha")
         bot.guardar_cookies()
         bot.analizar_publicaciones(posts)
         bot.imprimir_recomendaciones()
@@ -1474,6 +1489,95 @@ def facebook_pagina_listar(pagina: str = "", s=Depends(sesion)):
         "pagina": url or "",
         "pagina_defecto": facebook_pagina.PAGINA_DEFECTO,
     }
+
+
+class PedidoUrlPagina(BaseModel):
+    url: str = Field(min_length=10, max_length=300)
+    nombre: str = ""
+
+
+@app.get("/api/facebook/paginas")
+def facebook_paginas_listar(s=Depends(sesion)):
+    exigir(s, "admin_perfiles")
+    return {"paginas": facebook_pagina.listar_paginas(), "pagina_defecto": facebook_pagina.PAGINA_DEFECTO}
+
+
+@app.post("/api/facebook/paginas")
+def facebook_paginas_agregar(datos: PedidoUrlPagina, s=Depends(sesion)):
+    exigir(s, "admin_perfiles")
+    p = facebook_pagina.agregar_pagina(datos.url, datos.nombre)
+    if not p:
+        raise HTTPException(400, "Indica la URL de una página de Facebook de seguros.")
+    return p
+
+
+@app.delete("/api/facebook/paginas")
+def facebook_paginas_quitar(url: str, s=Depends(sesion)):
+    exigir(s, "admin_perfiles")
+    if not facebook_pagina.quitar_pagina(url):
+        raise HTTPException(400, "MAPFRE Colombia no se quita. Quita solo las páginas que añadiste.")
+    return {"ok": True}
+
+
+class PedidoRecopilar(BaseModel):
+    url: str = ""
+    urls: list[str] = []
+    nombre: str = ""
+    origen: str = ""
+
+
+@app.get("/api/perfiles/recopilar")
+def perfiles_recopilar_listar(s=Depends(sesion)):
+    exigir(s, "admin_perfiles")
+    return {"perfiles": facebook_pagina.listar_recopilar()}
+
+
+@app.post("/api/perfiles/recopilar")
+def perfiles_recopilar_agregar(datos: PedidoRecopilar, s=Depends(sesion)):
+    exigir(s, "admin_perfiles")
+    urls = [u.strip() for u in ([datos.url] + list(datos.urls or [])) if u and str(u).strip()]
+    if not urls:
+        raise HTTPException(400, "Pega al menos una URL de perfil.")
+    agregados, fallidas = [], []
+    for u in urls:
+        p = facebook_pagina.agregar_recopilar(u, datos.nombre, datos.origen)
+        if p:
+            agregados.append(p)
+        else:
+            fallidas.append(u)
+    return {"agregados": agregados, "n": len(agregados), "fallidas": fallidas}
+
+
+@app.delete("/api/perfiles/recopilar")
+def perfiles_recopilar_quitar(url: str, s=Depends(sesion)):
+    exigir(s, "admin_perfiles")
+    if not facebook_pagina.quitar_recopilar(url):
+        raise HTTPException(404, "Ese perfil no estaba en la lista.")
+    return {"ok": True}
+
+
+@app.post("/api/perfiles/recopilar/desde-pagina")
+def perfiles_recopilar_desde_pagina(pagina: str = "", s=Depends(sesion)):
+    exigir(s, "admin_perfiles")
+    url = facebook_pagina.clasificar_url_pagina(pagina.strip()) if pagina.strip() else None
+    n = facebook_pagina.pasar_interactuantes_a_recopilar(url)
+    return {"n": n, "perfiles": facebook_pagina.listar_recopilar()}
+
+
+class PedidoRecopilarLeer(BaseModel):
+    max_posts: int = Field(default=5, ge=1, le=10)
+
+
+@app.post("/api/perfiles/recopilar/leer")
+def perfiles_recopilar_leer(datos: PedidoRecopilarLeer, s=Depends(sesion)):
+    """Lee interacciones de los perfiles generales (lote de las URLs guardadas)."""
+    exigir(s, "admin_perfiles")
+    urls = [p["url"] for p in facebook_pagina.listar_recopilar()]
+    if not urls:
+        raise HTTPException(400, "Añade perfiles a la lista general primero.")
+    t = tareas.lanzar("ingesta_lote", f"Recopilar: {len(urls)} perfil(es)", s["usuario"],
+                      _correr_lote, urls, datos.max_posts, s["usuario"])
+    return {"tarea": t.vista(), "urls": urls, "solo_urls": True}
 
 
 @app.post("/api/facebook/pagina")

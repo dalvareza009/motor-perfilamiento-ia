@@ -306,13 +306,22 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 /* ------------------------------------------------------------ pestañas */
 .pestañas {
   display: flex; gap: 2px; box-shadow: inset 0 -1px 0 var(--border);
-  overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none; flex-wrap: nowrap;
 }
 .pestañas::-webkit-scrollbar { display: none; }
 .pestaña {
   border: 0; background: none; padding: 9px 12px; cursor: pointer; color: var(--text-2); font-weight: 550;
   border-bottom: 2px solid transparent; white-space: nowrap; display: inline-flex; gap: 6px; align-items: center;
+  flex: 0 0 auto;
 }
+.pestañas-deslizar {
+  overflow-x: auto; overflow-y: hidden; width: 100%; max-width: 100%; min-width: 0;
+  scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent;
+  padding-bottom: 10px; box-shadow: none;
+}
+.pestañas-deslizar::-webkit-scrollbar { display: block; height: 8px; }
+.pestañas-deslizar::-webkit-scrollbar-track { background: var(--surface-2); border-radius: 999px; }
+.pestañas-deslizar::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 999px; }
 .pestaña:hover { color: var(--text); }
 .pestaña.activa { color: var(--primary); border-bottom-color: var(--primary); }
 .pestaña .n { background: var(--surface-3); border-radius: 999px; padding: 0 7px; font-size: 11.5px; color: var(--text-2); }

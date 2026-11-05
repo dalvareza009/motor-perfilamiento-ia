@@ -40,6 +40,8 @@ scripts/      Arranque local y carga de base
 - **Modelo:** Ollama en local (`qwen3:4b-instruct`) o API compatible (`LLM_BASE_URL`, en Vercel AI Gateway).
 - **Scraping:** Google Chrome en el PC. En Vercel no hay login manual; sin cookies vigentes las redes bloquean el datacenter.
 
+Para instalarlo en **otro computador**: descomprime `motor_perfilamiento_ia_equipo.zip` y sigue **INSTALAR.md** (o ejecuta `INSTALAR.bat`).
+
 ## Arranque 100 % local
 
 Instalar Python 3.12+, Google Chrome, PostgreSQL 18 y Ollama (`qwen3:4b-instruct`, `nomic-embed-text`).

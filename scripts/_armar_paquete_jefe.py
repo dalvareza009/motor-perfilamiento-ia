@@ -1,4 +1,4 @@
-"""Zip local para el jefe: codigo + dump SQL, sin secretos ni Vercel."""
+"""Zip para instalar el motor en otro computador: codigo + dump SQL, sin secretos."""
 import zipfile
 from pathlib import Path
 
@@ -10,15 +10,30 @@ if not ESCRITORIO.exists():
 SKIP_DIR = {
     ".venv", ".git", ".cursor", ".vercel", "__pycache__", "agent-transcripts",
     "chrome_linkedin_profile", "chrome_facebook_profile", "chrome_instagram_profile",
-    "chrome_x_profile", "node_modules",
+    "chrome_x_profile", "node_modules", ".claude",
 }
 SKIP_FILE = {
     ".env", ".env.para-el-jefe", "x_cookies.json", "linkedin_cookies.json",
     "facebook_cookies.json", "instagram_cookies.json",
-    "vercel.json", "Dockerfile", ".vercelignore",
+    "perfiles_autorizados.json",
 }
-SKIP_PRE = ("_vercel", "_copiar", "_activar", "_probar", "_guardar", "_subir", "_armar", "_chrome")
+SKIP_PRE = ("_vercel", "_copiar", "_activar", "_probar", "_guardar", "_subir", "_chrome")
 SKIP_SUF = {".pyc", ".csv", ".pdb", ".dump"}
+SKIP_NAME_PART = ("_actividad_", "_recomendaciones_", "_resumen_")
+
+
+def incluir(rel: Path) -> bool:
+    if any(p in SKIP_DIR for p in rel.parts):
+        return False
+    if rel.name in SKIP_FILE or rel.suffix.lower() in SKIP_SUF:
+        return False
+    if rel.name.startswith("._"):
+        return False
+    if rel.parts[:1] == ("scripts",) and rel.name.startswith(SKIP_PRE):
+        return False
+    if any(p in rel.name for p in SKIP_NAME_PART):
+        return False
+    return True
 
 
 def main():
@@ -32,18 +47,20 @@ def main():
             if not path.is_file():
                 continue
             rel = path.relative_to(RAIZ)
-            if any(p in SKIP_DIR for p in rel.parts):
-                continue
-            if rel.name in SKIP_FILE or rel.suffix.lower() in SKIP_SUF:
-                continue
-            if rel.name.startswith("._"):
-                continue
-            if rel.parts[:1] == ("scripts",) and rel.name.startswith(SKIP_PRE):
+            if not incluir(rel):
                 continue
             zf.write(path, rel.as_posix())
             n += 1
-    print("zip", zip_path.name, "archivos", n, "mb", round(zip_path.stat().st_size / 1024 / 1024, 2))
-    print("incluye_dump", "datos_iniciales/base_datos.sql" in zipfile.ZipFile(zip_path).namelist())
+    nombres = zipfile.ZipFile(zip_path).namelist()
+    print("zip", zip_path)
+    print("archivos", n, "mb", round(zip_path.stat().st_size / 1024 / 1024, 2))
+    print("incluye INSTALAR.md", "INSTALAR.md" in nombres)
+    print("incluye INSTALAR.bat", "INSTALAR.bat" in nombres)
+    print("incluye dump", "datos_iniciales/base_datos.sql" in nombres)
+    print("incluye ejemplo perfiles", "data/perfiles_autorizados.ejemplo.json" in nombres)
+    print("sin cookies", not any(x.endswith("_cookies.json") for x in nombres))
+    print("sin .env", ".env" not in nombres)
+    print("sin perfiles reales", "data/perfiles_autorizados.json" not in nombres)
 
 
 if __name__ == "__main__":
