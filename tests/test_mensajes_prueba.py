@@ -1,6 +1,6 @@
 """Tres mensajes de prueba por prospecto, sin llamar al modelo ni a la base."""
 from app import validacion
-from app.mensajes_prueba import redactar_tres, respaldo
+from app.mensajes_prueba import agrupar, redactar_tres, respaldo
 
 
 def test_el_respaldo_cumple_las_reglas():
@@ -22,6 +22,23 @@ def test_siempre_hay_tres_opciones_aunque_el_modelo_no_responda():
         assert "Ana" in op["cuerpo"]
         assert op["eslogan"] in op["cuerpo"]
         assert "Global Seguros" in op["cuerpo"]
+
+
+def test_mensajes_salen_por_fecha_no_por_nombre():
+    filas = [
+        {"nombre": "Ana Gómez", "fuente_url": "u1", "red": "instagram", "producto": "P",
+         "opcion": 1, "eslogan": "a", "cuerpo": "c1", "estado": "borrador",
+         "errores_validacion": None, "creado_en": "2026-11-01T10:00:00"},
+        {"nombre": "Carlos Pérez", "fuente_url": "u2", "red": "x", "producto": "P",
+         "opcion": 1, "eslogan": "a", "cuerpo": "c2", "estado": "borrador",
+         "errores_validacion": None, "creado_en": "2026-11-04T20:00:00"},
+        {"nombre": "Carlos Pérez", "fuente_url": "u2", "red": "x", "producto": "P",
+         "opcion": 2, "eslogan": "b", "cuerpo": "c3", "estado": "borrador",
+         "errores_validacion": None, "creado_en": "2026-11-04T20:00:01"},
+    ]
+    grupos = agrupar(filas)
+    assert [g["nombre"] for g in grupos] == ["Carlos Pérez", "Ana Gómez"]
+    assert [o["opcion"] for o in grupos[0]["opciones"]] == [1, 2]
 
 
 if __name__ == "__main__":

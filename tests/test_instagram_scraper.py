@@ -49,6 +49,23 @@ def test_la_ficha_separa_familia_trabajo_estudios_y_quita_fechas():
     assert "Seguro educativo" in productos
 
 
+def test_la_bio_libre_queda_en_la_ficha():
+    info = parsear_ficha_instagram("""
+    ana
+    Ana Gómez
+    10
+    publicaciones
+    50
+    seguidores
+    186
+    seguidos
+    Amante del ciclismo y el café
+    """)
+    assert "ciclismo" in (info.get("bio") or info.get("titular") or "").lower()
+    textos = " ".join(h["contenido"] for h in hechos_desde_info(info)).lower()
+    assert "ciclismo" in textos
+
+
 def test_cuenta_privada_no_trae_publicaciones():
     assert es_cuenta_privada("Esta cuenta es privada\nSigue esta cuenta para ver sus fotos y videos.")
     info = parsear_ficha_instagram("Daniela Álvarez\nEsta cuenta es privada\nMamá de una hija")
@@ -108,9 +125,15 @@ def test_el_repost_del_catalogo_no_se_queda_fuera():
         posts = [{"tipo": "publicacion", "texto": f"Caption propio número {i} sin tema de catálogo."} for i in range(3)]
         posts.append({"tipo": "compartida", "texto": "Mira este paisaje de la tarde en el parque con amigos."})
         posts.append({"tipo": "compartida", "texto": "Mi hija entra a la universidad este año y estamos muy felices."})
-        elegidas = bot._elegir(posts, 1)
-        assert sum(1 for p in elegidas if p["tipo"] == "publicacion") == 1
-        assert any("universidad" in p["texto"] for p in elegidas)
+        una = bot._elegir(posts, 1)
+        assert len(una) == 1
+        assert "universidad" in una[0]["texto"]
+        dos = bot._elegir(posts, 2)
+        assert len(dos) == 2
+        assert any("universidad" in p["texto"] for p in dos)
+        muchas = [{"tipo": "publicacion", "texto": f"propia {i} sin tema de catalogo."} for i in range(8)]
+        muchas += [{"tipo": "compartida", "texto": f"repost {i} sin tema de catalogo."} for i in range(8)]
+        assert len(bot._elegir(muchas, 4)) == 4
 
 
 def test_la_publicacion_pesa_igual_que_una_propia():

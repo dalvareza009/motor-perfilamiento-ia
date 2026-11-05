@@ -45,6 +45,21 @@ def test_systemexit_de_un_comando_queda_como_error_legible():
     assert t.lineas[0] == "intentando..."
 
 
+def test_cancelar_deja_de_correr():
+    arranque = threading.Event()
+    def trabajo(t):
+        t.avance(0, 4)
+        arranque.set()
+        while not t.cancelada:
+            time.sleep(0.02)
+        return {"detenida": True}
+    t = tareas.lanzar("prueba", "se cancela", "ana", trabajo)
+    assert arranque.wait(2)
+    tareas.marcar_cancelada(t)
+    _esperar(t)
+    assert t.estado == "cancelada" and t.resultado == {"detenida": True}
+
+
 def test_admin_puede_todo_lo_del_asesor_y_ve_grupos_pequenos():
     assert governance.PERMISOS["asesor"] <= governance.PERMISOS["admin"]
     assert governance.autorizar("admin", "admin_conocimiento")

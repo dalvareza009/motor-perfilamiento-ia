@@ -47,6 +47,8 @@ def test_la_ficha_separa_persona_logro_y_quita_fechas():
     hechos = hechos_desde_info(info)
     categorias = {h["categoria"] for h in hechos}
     assert "Logros" in categorias
+    assert "Descripcion" in categorias
+    assert "analista" in (info.get("bio") or "").lower()
     productos = {p["titulo"] for p in sugerir_productos(hechos)}
     assert "Seguro de vida" in productos
     assert "Seguro educativo" in productos
@@ -138,9 +140,12 @@ def test_el_repost_del_catalogo_entra_y_no_se_copia_como_dato_personal():
         posts = [{"tipo": "publicacion", "texto": f"Nota propia {i} sin un tema del catalogo de seguros."} for i in range(3)]
         posts.append({"tipo": "compartida", "texto": "Mira este paisaje de la tarde en el parque con amigos."})
         posts.append({"tipo": "compartida", "texto": "Mi hija entra a la universidad este año y estamos muy felices."})
-        elegidas = bot._elegir(posts, 1)
-        assert sum(1 for p in elegidas if p["tipo"] == "publicacion") == 1
-        assert any("universidad" in p["texto"] for p in elegidas)
+        una = bot._elegir(posts, 1)
+        assert len(una) == 1
+        assert "universidad" in una[0]["texto"]
+        dos = bot._elegir(posts, 2)
+        assert len(dos) == 2
+        assert any("universidad" in p["texto"] for p in dos)
     info = incorporar_datos_importantes({"nombre": "Daniela Álvarez"}, [
         {"tipo": "compartida", "texto": "Mi hija entra a la universidad este año y estamos muy felices."},
         {"tipo": "publicacion", "texto": "Me gradué con premio en la maestría."},
@@ -157,9 +162,13 @@ def test_se_reservan_cupos_para_respuestas_y_logros():
         posts = [{"tipo": "publicacion", "texto": f"p{i}"} for i in range(4)]
         posts += [{"tipo": "respuesta", "texto": "r1"}, {"tipo": "logro", "texto": "l1"}]
         elegidas = bot._elegir(posts, 2)
-        assert sum(1 for p in elegidas if p["tipo"] == "publicacion") == 2
-        assert any(p["tipo"] == "respuesta" for p in elegidas)
-        assert any(p["tipo"] == "logro" for p in elegidas)
+        assert len(elegidas) == 2
+        tipos = {p["tipo"] for p in elegidas}
+        assert "publicacion" in tipos
+        assert tipos & {"respuesta", "logro"}
+        muchas = [{"tipo": "publicacion", "texto": f"p{i}"} for i in range(8)]
+        muchas += [{"tipo": "respuesta", "texto": f"r{i}"} for i in range(8)]
+        assert len(bot._elegir(muchas, 4)) == 4
 
 
 if __name__ == "__main__":

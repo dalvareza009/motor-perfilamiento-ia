@@ -26,8 +26,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app import tareas  # noqa: I001  (primero: instala la captura de lo que imprimen los comandos)
 from app import (asesor, conocimiento, deduplicacion, embeddings, governance, ingesta_actividad, ingesta_linkedin,
-                 ingesta_perfiles, ingesta_web, mensajes, ollama_client, perfil_redes, runtime_nube, segmentos,
-                 sesion_token, vectorizar)
+                 ingesta_perfiles, ingesta_web, mensajes, ollama_client, perfil_redes, redes_seguidas, runtime_nube,
+                 segmentos, sesion_token, vectorizar)
 from app import main as flujo_perfil
 from app.database import get_connection
 
@@ -571,6 +571,17 @@ def ver_tarea(id_tarea: str, desde: int = 0, s=Depends(sesion)):
     return t.vista(max(desde, 0))
 
 
+@app.post("/api/tareas/{id_tarea}/cancelar")
+def cancelar_tarea(id_tarea: str, s=Depends(sesion)):
+    t = tareas.obtener(id_tarea)
+    if not t or (t.usuario != s["usuario"] and s["rol"] != "admin"):
+        raise HTTPException(404, "No existe esa tarea.")
+    if t.estado != "en_curso":
+        return {"ok": True, "tarea": t.vista()}
+    tareas.marcar_cancelada(t)
+    return {"ok": True, "tarea": t.vista()}
+
+
 # ------------------------------------------------------------------ asistente en lenguaje natural
 def _r_mensaje_cliente(intencion, s):
     if not intencion["nombre"]:
@@ -680,6 +691,7 @@ class Seleccion(BaseModel):
     todos: bool = False
     producto: str | None = None
     categoria: str | None = None
+    grupo: str = ""
 
 
 @app.post("/api/conocimiento/aprobar")
@@ -817,74 +829,153 @@ def guardar_autorizados(datos: Autorizados, s=Depends(sesion)):
     return {"ok": True, "avisos": avisos}
 
 
+TOPE_LOTE = 50
+
+
 class PedidoLectura(BaseModel):
     nombres: list[str] = []
+    urls: list[str] = []
+    max_posts: int = Field(default=10, ge=1, le=10)
+    todos: bool = False
 
 
-def _correr_ingesta_perfiles(tarea, nombres, usuario):
-    """Lee con la sesión de Chrome (la misma que Redes) y devuelve la ficha de cada URL."""
-    archivo = ingesta_perfiles.ARCHIVO
-    data = json.loads(archivo.read_text(encoding="utf-8")) if archivo.is_file() else []
-    if not isinstance(data, list):
-        data = []
-    if nombres:
-        pedidas = {n.strip() for n in nombres if n and n.strip()}
-        data = [p for p in data if isinstance(p, dict) and str(p.get("nombre") or "").strip() in pedidas]
-    personas, avisos = perfil_redes.cargar_autorizados(data)
+def _objetivos_lote(nombres, urls, todos=False):
+    """URLs pegadas se leen tal cual. Sin URLs no se tocan las personas autorizadas viejas."""
+    objetivos, avisos = ingesta_perfiles.objetivos_de_pedido(nombres, urls, todos=todos)
     for aviso in avisos:
         print(f"· {aviso}")
-    objetivos = [(p, u) for p in personas for u in p["urls"]]
+    return objetivos, avisos
+
+
+def _correr_ingesta_perfiles(tarea, nombres, urls, max_posts, usuario, todos=False):
+    """Un Chrome por red: lee hasta 50 perfiles seguidos, sin reabrir el navegador."""
+    tope = redes_seguidas.tope_publicaciones(max_posts)
+    urls_limpias = [str(u).strip() for u in (urls or []) if u and str(u).strip()]
+    if urls_limpias:
+        print(f"Solo las {len(urls_limpias)} URL(s) pegadas. No se leen Personas autorizadas.")
+        for u in urls_limpias:
+            print(f"  · {u}")
+        objetivos, avisos = ingesta_perfiles.objetivos_desde_urls(urls_limpias, data=[])
+        for aviso in avisos:
+            print(f"· {aviso}")
+    else:
+        objetivos, avisos = _objetivos_lote(nombres, [], todos=todos)
     if not objetivos:
-        raise SystemExit(avisos[0] if avisos else "No hay perfiles autorizados para leer.")
-    corredores = {
-        "linkedin": _correr_linkedin_sesion,
-        "facebook": _correr_facebook_sesion,
-        "instagram": _correr_instagram_sesion,
-        "x": _correr_x_sesion,
-    }
-    tarea.avance(0, len(objetivos))
-    resultados, canceladas = [], set()
-    for i, (persona, perfil) in enumerate(objetivos, 1):
-        red, url = perfil["red"], perfil["url"]
-        print(f"\n--- {persona['nombre']}: {red} {url} ---")
-        if red in canceladas:
-            res = {"ok": False, "perfil": url, "red": red, "nombre": persona["nombre"],
-                   "motivo": "No se confirmó el inicio de sesión, así que no seguí con los demás perfiles de esa red."}
-        elif red not in corredores:
-            res = {"ok": False, "perfil": url, "red": red, "nombre": persona["nombre"],
-                   "motivo": "Desde aquí se lee LinkedIn, Facebook, Instagram y X. Esa URL es de otra red."}
-        else:
-            res = corredores[red](tarea, url, 10, usuario, False, False)
-            info = dict(res.get("perfil_info") or {})
-            if res.get("ok") and not info.get("nombre"):
-                info["nombre"] = persona["nombre"]
-                res = {**res, "perfil_info": info}
-            res = {**res, "red": red, "nombre": persona["nombre"]}
-            if not res.get("ok") and "inicio de sesión" in (res.get("motivo") or "").lower():
-                canceladas.add(red)
-        resultados.append(res)
-        tarea.avance(i, len(objetivos))
-    vistos = set()
-    for res in resultados:
-        nombre = res.get("nombre") or ""
-        productos = (res.get("guardado") or {}).get("productos_sugeridos") or []
-        if not res.get("ok") or not nombre or not productos or nombre in vistos:
+        raise SystemExit(avisos[0] if avisos else
+                         "Pega URLs de LinkedIn, Facebook, Instagram o X, una por línea.")
+    if len(objetivos) > TOPE_LOTE:
+        print(f"Este lote toma los primeros {TOPE_LOTE} perfiles (había {len(objetivos)}).")
+        objetivos = objetivos[:TOPE_LOTE]
+    por_red = {}
+    for persona, perfil in objetivos:
+        por_red.setdefault(perfil["red"], []).append((persona, perfil))
+    resultados, hechos, total = [], 0, len(objetivos)
+    tarea.avance(0, total)
+    print(f"{total} perfil(es); {tope} publicación(es) por perfil.")
+    for red, items in por_red.items():
+        if getattr(tarea, "cancelada", False):
+            print("Tarea detenida.")
+            break
+        bot = _abrir_bot(red, tarea)
+        tarea.bot = bot
+        if not bot:
+            for persona, perfil in items:
+                resultados.append({
+                    "ok": False, "perfil": perfil["url"], "red": red,
+                    "nombre": persona.get("nombre") or perfil["url"],
+                    "motivo": f"No se confirmó el inicio de sesión en {red}.",
+                })
+                hechos += 1
+                tarea.avance(hechos, total)
             continue
-        vistos.add(nombre)
-        res["mensajes"] = _adjuntar_mensajes(
-            nombre, res.get("perfil") or "", res.get("red") or "", res.get("perfil_info") or {},
-            res.get("guardado") or {}, usuario)
+        try:
+            for persona, perfil in items:
+                if getattr(tarea, "cancelada", False):
+                    print("Tarea detenida.")
+                    break
+                url = perfil["url"]
+                print(f"\n--- {persona.get('nombre') or url}: {red} {url} ---")
+                res = _procesar_con_bot(red, bot, url, tope, usuario, True)
+                info = dict(res.get("perfil_info") or {})
+                nombre = info.get("nombre") or persona.get("nombre") or ""
+                if res.get("ok") and nombre and not info.get("nombre"):
+                    info["nombre"] = nombre
+                    res = {**res, "perfil_info": info}
+                resultados.append({**res, "red": red, "nombre": nombre})
+                hechos += 1
+                tarea.avance(hechos, total)
+        finally:
+            tarea.bot = None
+            bot.cerrar_navegador(preguntar=False)
     return {"ok": any(r.get("ok") for r in resultados), "resultados": resultados}
+
+
+def _correr_lote(tarea, urls, max_posts, usuario):
+    """Nunca lee Personas autorizadas: solo las URLs del pedido."""
+    urls_limpias = [str(u).strip() for u in (urls or []) if u and str(u).strip()]
+    if not urls_limpias:
+        raise SystemExit("El lote no tiene URLs. No se leen personas autorizadas.")
+    return _correr_ingesta_perfiles(tarea, [], urls_limpias, max_posts, usuario, todos=False)
 
 
 @app.post("/api/perfiles/ingesta")
 def perfiles_ingesta(datos: PedidoLectura, s=Depends(sesion)):
     exigir(s, "admin_perfiles")
-    desc = "Perfiles: " + (", ".join(datos.nombres) if datos.nombres else "todas las personas autorizadas")
-    t = tareas.lanzar("ingesta_perfiles", desc, s["usuario"], _correr_ingesta_perfiles,
-                      list(datos.nombres), s["usuario"])
-    governance.registrar(s["usuario"], s["rol"], "ingesta_perfiles", {"origen": "web", "nombres": datos.nombres}, 0)
+    urls = [u.strip() for u in datos.urls if u and str(u).strip()]
+    nombres = [n.strip() for n in datos.nombres if n and str(n).strip()]
+    if not urls and not nombres and not datos.todos:
+        raise HTTPException(
+            status_code=400,
+            detail="Pega al menos una URL. Extraer lote no lee las personas autorizadas anteriores.",
+        )
+    if urls:
+        desc = f"Lote: {len(urls)} URL(s)"
+        tipo = "ingesta_lote"
+        tareas.cancelar_tipo("ingesta_perfiles")
+    elif nombres:
+        desc = "Perfiles: " + ", ".join(nombres)
+        tipo = "ingesta_perfiles"
+    else:
+        desc = "Perfiles: todas las personas autorizadas"
+        tipo = "ingesta_perfiles"
+    t = tareas.lanzar(tipo, desc, s["usuario"], _correr_ingesta_perfiles,
+                      nombres, urls, datos.max_posts, s["usuario"], datos.todos)
+    governance.registrar(s["usuario"], s["rol"], tipo,
+                         {"origen": "web", "nombres": nombres, "urls": len(urls),
+                          "max_posts": datos.max_posts, "todos": datos.todos}, 0)
     return {"tarea": t.vista()}
+
+
+class PedidoLote(BaseModel):
+    urls: list[str] = Field(min_length=1, max_length=50)
+    max_posts: int = Field(default=10, ge=1, le=10)
+
+
+@app.get("/api/perfiles/lote")
+def perfiles_lote_listo(s=Depends(sesion)):
+    """Si esto responde, el servidor ya no cae a Personas autorizadas al extraer un lote."""
+    exigir(s, "admin_perfiles")
+    return {"solo_urls": True, "tope": TOPE_LOTE}
+
+
+@app.post("/api/perfiles/lote")
+def perfiles_lote(datos: PedidoLote, s=Depends(sesion)):
+    """Extrae únicamente las URLs pegadas. No abre Personas autorizadas."""
+    exigir(s, "admin_perfiles")
+    urls = [u.strip() for u in datos.urls if u and str(u).strip()]
+    if not urls:
+        raise HTTPException(400, "Pega al menos una URL de perfil. El lote no lee Personas autorizadas.")
+    for t in tareas.recientes(s["usuario"]):
+        if t.estado == "en_curso" and (
+            t.tipo == "ingesta_perfiles" or "autorizad" in (t.descripcion or "").lower()
+        ):
+            tareas.marcar_cancelada(t)
+    desc = f"Lote: {len(urls)} URL(s)"
+    t = tareas.lanzar("ingesta_lote", desc, s["usuario"], _correr_lote,
+                      urls, datos.max_posts, s["usuario"])
+    governance.registrar(s["usuario"], s["rol"], "ingesta_lote",
+                         {"origen": "web", "urls": urls, "max_posts": datos.max_posts}, 0)
+    return {"solo_urls": True, "urls": urls, "tarea": t.vista()}
 
 
 @app.get("/api/mensajes-prueba")
@@ -899,19 +990,25 @@ def mensajes_prueba_lista(s=Depends(sesion)):
 def perfiles_personas(s=Depends(sesion)):
     exigir(s, "admin_perfiles")
     ingesta_perfiles.asegurar_tabla()
+    cats = list(redes_seguidas.CATEGORIAS_RED)
     return _consulta("""SELECT nombre, MAX(clave_cliente) AS clave_cliente,
-                               COUNT(*) FILTER (WHERE NOT activo AND NOT descartado) AS pendientes,
+                               COUNT(*) FILTER (WHERE NOT activo AND NOT descartado
+                                    AND categoria <> ALL(%s)) AS pendientes,
+                               COUNT(*) FILTER (WHERE NOT activo AND NOT descartado
+                                    AND categoria = ANY(%s)) AS pendientes_red,
                                COUNT(*) FILTER (WHERE activo) AS aprobados,
                                COUNT(*) FILTER (WHERE descartado AND NOT activo) AS descartados,
                                STRING_AGG(DISTINCT red, ', ') AS redes,
                                MAX(fecha_actualizacion) AS actualizado
-                        FROM public.hechos_perfil GROUP BY nombre ORDER BY nombre""")
+                        FROM public.hechos_perfil GROUP BY nombre ORDER BY nombre""",
+                     (cats, cats))
 
 
 class FiltroHechos(BaseModel):
     nombre: str = ""
     estado: str = "pendiente"
-    limite: int = Field(default=300, ge=1, le=1000)
+    grupo: str = ""
+    limite: int = Field(default=500, ge=1, le=5000)
 
 
 @app.post("/api/perfiles/hechos/lista")
@@ -921,11 +1018,21 @@ def perfiles_hechos(datos: FiltroHechos, s=Depends(sesion)):
     nombre = datos.nombre.strip()
     where = {"pendiente": "NOT activo AND NOT descartado", "aprobado": "activo",
              "descartado": "descartado AND NOT activo"}.get(datos.estado, "TRUE")
+    cats_sql = "('Seguidor', 'Sigue a', 'Repost')"
+    if datos.grupo == "red":
+        where += f" AND categoria IN {cats_sql}"
+    else:
+        where += f" AND categoria NOT IN {cats_sql}"
     return _consulta(f"""SELECT id_hecho, nombre, clave_cliente, red, fuente_url, categoria, titulo, contenido,
                                 activo, descartado, fecha_actualizacion
                          FROM public.hechos_perfil
                          WHERE {where} AND (%s = '' OR LOWER(nombre) = LOWER(%s))
-                         ORDER BY id_hecho DESC LIMIT %s""",
+                         ORDER BY CASE categoria
+                            WHEN 'Seguidor' THEN 0
+                            WHEN 'Sigue a' THEN 1
+                            WHEN 'Repost' THEN 2
+                            ELSE 3 END, titulo, id_hecho DESC
+                         LIMIT %s""",
                      (nombre, nombre, datos.limite))
 
 
@@ -933,7 +1040,8 @@ def perfiles_hechos(datos: FiltroHechos, s=Depends(sesion)):
 def perfiles_aprobar(datos: Seleccion, s=Depends(sesion)):
     exigir(s, "admin_perfiles")
     return _correr_comando(ingesta_perfiles.cmd_aprobar,
-                           argparse.Namespace(ids=datos.ids, todos=datos.todos, usuario=s["usuario"]))
+                           argparse.Namespace(ids=datos.ids, todos=datos.todos, grupo=datos.grupo,
+                                              usuario=s["usuario"]))
 
 
 @app.post("/api/perfiles/hechos/descartar")
@@ -1079,7 +1187,7 @@ _ESPERAS_LOCK = threading.Lock()
 
 class PedidoActividad(BaseModel):
     url: str = Field(min_length=10, max_length=300)
-    max_posts: int = Field(default=10, ge=1, le=50)
+    max_posts: int = Field(default=10, ge=1, le=10)
 
 
 def _confirmador_login(tarea):
@@ -1113,26 +1221,53 @@ def _adjuntar_mensajes(nombre, url, red, info, guardado, usuario):
         return []
 
 
-def _correr_linkedin_sesion(tarea, url, max_posts, usuario, informar_avance=True, redactar=True):
-    from linkedin_activity_scraper import LinkedInActivityScraper
-
+def _abrir_bot(red, tarea):
+    """Abre Chrome con la sesión de esa red. None si no hay login."""
     raiz = FRONT.parent
-    bot = LinkedInActivityScraper(
-        cookie_file=str(raiz / "linkedin_cookies.json"),
-        profile_dir=str(raiz / "chrome_linkedin_profile"),
-        confirmar_login=_confirmador_login(tarea))
-    try:
-        if not bot.iniciar_navegador():
-            return {"ok": False, "perfil": url,
-                    "motivo": "No se confirmó el inicio de sesión en Chrome."}
-        if informar_avance:
-            tarea.avance(0, 1)
-        info = bot.extraer_informacion_perfil(url)   # 1º la ficha del perfil
-        posts = bot.extraer_publicaciones_perfil(url, max_posts=max_posts)  # 2º la actividad
+    login = _confirmador_login(tarea)
+    if red == "linkedin":
+        from linkedin_activity_scraper import LinkedInActivityScraper
+        bot = LinkedInActivityScraper(
+            cookie_file=str(raiz / "linkedin_cookies.json"),
+            profile_dir=str(raiz / "chrome_linkedin_profile"),
+            confirmar_login=login)
+    elif red == "facebook":
+        from facebook_activity_scraper import FacebookActivityScraper
+        bot = FacebookActivityScraper(
+            cookie_file=str(raiz / "facebook_cookies.json"),
+            profile_dir=str(raiz / "chrome_facebook_profile"),
+            confirmar_login=login)
+    elif red == "instagram":
+        from instagram_activity_scraper import InstagramActivityScraper
+        bot = InstagramActivityScraper(
+            cookie_file=str(raiz / "instagram_cookies.json"),
+            profile_dir=str(raiz / "chrome_instagram_profile"),
+            confirmar_login=login)
+    elif red == "x":
+        from x_activity_scraper import XActivityScraper
+        bot = XActivityScraper(
+            cookie_file=str(raiz / "x_cookies.json"),
+            profile_dir=str(raiz / "chrome_x_profile"),
+            confirmar_login=login)
+    else:
+        return None
+    if bot.iniciar_navegador():
+        return bot
+    bot.cerrar_navegador(preguntar=False)
+    return None
+
+
+def _procesar_con_bot(red, bot, url, max_posts, usuario, redactar=True):
+    """Ficha + seguidores/reposts + publicaciones, con el Chrome ya abierto."""
+    if red == "linkedin":
+        info = bot.extraer_informacion_perfil(url)
+        posts = bot.extraer_publicaciones_perfil(url, max_posts=max_posts)
+        info = bot.info_perfil.get(url) or info
         from app import linkedin_texto
         ficha = "\n".join(p for p in (
-            info.get("titular"), info.get("acerca"), info.get("experiencia"),
-            info.get("educacion"), info.get("ubicacion")) if p)
+            info.get("titular"), info.get("bio"), info.get("acerca"), info.get("experiencia"),
+            info.get("educacion"), info.get("ubicacion"),
+            info.get("paginas_seguidas"), info.get("interacciones")) if p)
         visibles = [p for p in posts
                     if not linkedin_texto.evaluar_publicacion(p.get("texto") or "")["omitida"]]
         info = perfil_redes.aplicar_lo_publicado(
@@ -1140,21 +1275,60 @@ def _correr_linkedin_sesion(tarea, url, max_posts, usuario, informar_avance=True
         bot.guardar_cookies()
         bot.analizar_publicaciones(posts)
         bot.imprimir_recomendaciones()
-        quien = _persona_autorizada(url)
-        guardado = ingesta_actividad.persistir(quien, "linkedin", url, info, posts)
+        analisis = bot
+    else:
+        info = bot.extraer_informacion_perfil(url)
+        if info.get("no_disponible") or (red != "facebook" and not info):
+            return {"ok": False, "perfil": url, "perfil_info": info or {},
+                    "motivo": f"{red} no muestra ese perfil."}
+        try:
+            posts = bot.extraer_publicaciones(url, max_posts=max_posts)
+        except Exception as e:
+            print(f"No se leyeron publicaciones de {red}: {e}")
+            posts = []
+        info = bot.info or info
+        bot.analisis.analizar_publicaciones(posts)
+        bot.analisis.imprimir_recomendaciones()
+        analisis = bot.analisis
+    quien = _persona_autorizada(url) or {}
+    nombre = (info or {}).get("nombre") or quien.get("nombre") or ""
+    quien = {"nombre": nombre, "clave_cliente": quien.get("clave_cliente")}
+    guardado = ingesta_actividad.persistir(quien, red, url, info, posts)
+    if nombre:
+        ingesta_perfiles.registrar_perfil_leido(nombre, red, url, quien.get("clave_cliente"))
+    mensajes = _adjuntar_mensajes(nombre, url, red, info, guardado, usuario) if redactar else []
+    omitidas = analisis.omitidas_sensibles
+    n_omitidas = sum(omitidas.values()) if hasattr(omitidas, "values") else int(omitidas or 0)
+    return {
+        "ok": True, "perfil": url, "perfil_info": info, "mensajes": mensajes,
+        "temas_del_perfil": analisis.resumen.get(url, {}).get("temas_del_perfil", {}),
+        "descartadas_antiguas": getattr(analisis, "descartadas_antiguas", 0)
+        or getattr(analisis, "ultimas_descartadas", 0),
+        "publicaciones": analisis.resumen.get(url, {}).get("publicaciones_extraidas", len(posts)),
+        "omitidas_sensibles": n_omitidas,
+        "recomendaciones": analisis.recomendaciones,
+        "guardado": guardado,
+    }
+
+
+def _correr_sesion(red, tarea, url, max_posts, usuario, informar_avance=True, redactar=True):
+    bot = _abrir_bot(red, tarea)
+    if not bot:
+        return {"ok": False, "perfil": url,
+                "motivo": f"No se confirmó el inicio de sesión en {red}."}
+    try:
+        if informar_avance:
+            tarea.avance(0, 1)
+        res = _procesar_con_bot(red, bot, url, max_posts, usuario, redactar)
         if informar_avance:
             tarea.avance(1, 1)
-        nombre = (quien or {}).get("nombre") or info.get("nombre") or ""
-        mensajes = _adjuntar_mensajes(nombre, url, "linkedin", info, guardado, usuario) if redactar else []
-        return {"ok": True, "perfil": url, "perfil_info": info, "mensajes": mensajes,
-                "temas_del_perfil": bot.resumen.get(url, {}).get("temas_del_perfil", {}),
-                "descartadas_antiguas": bot.descartadas_antiguas,
-                "publicaciones": bot.resumen.get(url, {}).get("publicaciones_extraidas", len(posts)),
-                "omitidas_sensibles": sum(bot.omitidas_sensibles.values()),
-                "recomendaciones": bot.recomendaciones,
-                "guardado": guardado}
+        return res
     finally:
         bot.cerrar_navegador(preguntar=False)
+
+
+def _correr_linkedin_sesion(tarea, url, max_posts, usuario, informar_avance=True, redactar=True):
+    return _correr_sesion("linkedin", tarea, url, max_posts, usuario, informar_avance, redactar)
 
 
 @app.post("/api/linkedin/actividad")
@@ -1208,31 +1382,7 @@ def linkedin_cancelar(id_tarea: str, s=Depends(sesion)):
 
 # -------------------------------------------------- Facebook con tu sesión (mismo criterio)
 def _correr_facebook_sesion(tarea, url, max_posts, usuario, informar_avance=True, redactar=True):
-    from facebook_activity_scraper import FacebookActivityScraper
-
-    raiz = FRONT.parent
-    bot = FacebookActivityScraper(
-        cookie_file=str(raiz / "facebook_cookies.json"),
-        profile_dir=str(raiz / "chrome_facebook_profile"),
-        confirmar_login=_confirmador_login(tarea))
-    if not bot.iniciar_navegador():
-        bot.cerrar_navegador(preguntar=False)
-        return {"ok": False, "perfil": url, "motivo": "No se confirmó el inicio de sesión en Facebook."}
-    try:
-        if informar_avance:
-            tarea.avance(0, 1)
-        info = bot.extraer_informacion_perfil(url)
-        quien = _persona_autorizada(url)
-        guardado = ingesta_actividad.persistir(quien, "facebook", url, info, posts=[])
-        if informar_avance:
-            tarea.avance(1, 1)
-        nombre = (quien or {}).get("nombre") or info.get("nombre") or ""
-        mensajes = _adjuntar_mensajes(nombre, url, "facebook", info, guardado, usuario) if redactar else []
-        return {"ok": True, "perfil": url, "perfil_info": info, "solo_perfil": True, "mensajes": mensajes,
-                "temas_del_perfil": {}, "descartadas_antiguas": 0, "publicaciones": 0,
-                "omitidas_sensibles": 0, "recomendaciones": [], "guardado": guardado}
-    finally:
-        bot.cerrar_navegador(preguntar=False)
+    return _correr_sesion("facebook", tarea, url, max_posts, usuario, informar_avance, redactar)
 
 
 def _persona_autorizada(url):
@@ -1258,13 +1408,11 @@ def _persona_autorizada(url):
 
 @app.post("/api/facebook/actividad")
 def facebook_actividad(datos: PedidoActividad, s=Depends(sesion)):
-    """Extrae solo la ficha personal de UN perfil de Facebook con tu sesión."""
+    """Extrae ficha, seguidos, publicaciones y reposts de UN perfil de Facebook con tu sesión."""
     exigir(s, "admin_perfiles")
     clasificada = perfil_redes.clasificar_url(datos.url.strip())
     if not clasificada or clasificada[0] != "facebook":
         raise HTTPException(400, "Indica la URL de un perfil de Facebook: https://www.facebook.com/usuario")
-    if not _persona_autorizada(clasificada[1]):
-        raise HTTPException(403, "Ese perfil no está en Personas autorizadas. Agrégalo y marca que autorizó.")
     url = clasificada[1]
     t = tareas.lanzar("extraccion_facebook", f"Ficha Facebook: {url}", s["usuario"],
                       _correr_facebook_sesion, url, datos.max_posts, s["usuario"])
@@ -1293,42 +1441,7 @@ def facebook_cancelar(id_tarea: str, s=Depends(sesion)):
 
 # ------------------------------------------------- Instagram con tu sesión (mismo criterio)
 def _correr_instagram_sesion(tarea, url, max_posts, usuario, informar_avance=True, redactar=True):
-    from instagram_activity_scraper import InstagramActivityScraper
-
-    raiz = FRONT.parent
-    bot = InstagramActivityScraper(
-        cookie_file=str(raiz / "instagram_cookies.json"),
-        profile_dir=str(raiz / "chrome_instagram_profile"),
-        confirmar_login=_confirmador_login(tarea))
-    if not bot.iniciar_navegador():
-        bot.cerrar_navegador(preguntar=False)
-        return {"ok": False, "perfil": url, "motivo": "No se confirmó el inicio de sesión en Instagram."}
-    try:
-        if informar_avance:
-            tarea.avance(0, 1)
-        info = bot.extraer_informacion_perfil(url)
-        if not info or info.get("no_disponible"):
-            return {"ok": False, "perfil": url, "perfil_info": info,
-                    "motivo": "Instagram no muestra ese perfil."}
-        posts = bot.extraer_publicaciones(url, max_posts=max_posts)
-        info = bot.info or info
-        bot.analisis.analizar_publicaciones(posts)
-        bot.analisis.imprimir_recomendaciones()
-        quien = _persona_autorizada(url)
-        guardado = ingesta_actividad.persistir(quien, "instagram", url, info, posts)
-        if informar_avance:
-            tarea.avance(1, 1)
-        nombre = (quien or {}).get("nombre") or info.get("nombre") or ""
-        mensajes = _adjuntar_mensajes(nombre, url, "instagram", info, guardado, usuario) if redactar else []
-        return {"ok": True, "perfil": url, "perfil_info": info, "mensajes": mensajes,
-                "temas_del_perfil": bot.analisis.resumen.get(url, {}).get("temas_del_perfil", {}),
-                "descartadas_antiguas": bot.analisis.descartadas_antiguas,
-                "publicaciones": len(posts),
-                "omitidas_sensibles": sum(bot.analisis.omitidas_sensibles.values()),
-                "recomendaciones": bot.analisis.recomendaciones,
-                "guardado": guardado}
-    finally:
-        bot.cerrar_navegador(preguntar=False)
+    return _correr_sesion("instagram", tarea, url, max_posts, usuario, informar_avance, redactar)
 
 
 @app.post("/api/instagram/actividad")
@@ -1338,8 +1451,6 @@ def instagram_actividad(datos: PedidoActividad, s=Depends(sesion)):
     clasificada = perfil_redes.clasificar_url(datos.url.strip())
     if not clasificada or clasificada[0] != "instagram":
         raise HTTPException(400, "Indica la URL de un perfil de Instagram: https://www.instagram.com/usuario/")
-    if not _persona_autorizada(clasificada[1]):
-        raise HTTPException(403, "Ese perfil no está en Personas autorizadas. Agrégalo y marca que autorizó.")
     url = clasificada[1]
     t = tareas.lanzar("extraccion_instagram", f"Actividad Instagram: {url}", s["usuario"],
                       _correr_instagram_sesion, url, datos.max_posts, s["usuario"])
@@ -1368,42 +1479,7 @@ def instagram_cancelar(id_tarea: str, s=Depends(sesion)):
 
 # ------------------------------------------------------- X con tu sesión (mismo criterio)
 def _correr_x_sesion(tarea, url, max_posts, usuario, informar_avance=True, redactar=True):
-    from x_activity_scraper import XActivityScraper
-
-    raiz = FRONT.parent
-    bot = XActivityScraper(
-        cookie_file=str(raiz / "x_cookies.json"),
-        profile_dir=str(raiz / "chrome_x_profile"),
-        confirmar_login=_confirmador_login(tarea))
-    if not bot.iniciar_navegador():
-        bot.cerrar_navegador(preguntar=False)
-        return {"ok": False, "perfil": url, "motivo": "No se confirmó el inicio de sesión en X."}
-    try:
-        if informar_avance:
-            tarea.avance(0, 1)
-        info = bot.extraer_informacion_perfil(url)
-        if not info or info.get("no_disponible"):
-            return {"ok": False, "perfil": url, "perfil_info": info,
-                    "motivo": "X no muestra ese perfil."}
-        posts = bot.extraer_publicaciones(url, max_posts=max_posts)
-        info = bot.info or info
-        bot.analisis.analizar_publicaciones(posts)
-        bot.analisis.imprimir_recomendaciones()
-        quien = _persona_autorizada(url)
-        guardado = ingesta_actividad.persistir(quien, "x", url, info, posts)
-        if informar_avance:
-            tarea.avance(1, 1)
-        nombre = (quien or {}).get("nombre") or info.get("nombre") or ""
-        mensajes = _adjuntar_mensajes(nombre, url, "x", info, guardado, usuario) if redactar else []
-        return {"ok": True, "perfil": url, "perfil_info": info, "mensajes": mensajes,
-                "temas_del_perfil": bot.analisis.resumen.get(url, {}).get("temas_del_perfil", {}),
-                "descartadas_antiguas": bot.analisis.descartadas_antiguas,
-                "publicaciones": len(posts),
-                "omitidas_sensibles": sum(bot.analisis.omitidas_sensibles.values()),
-                "recomendaciones": bot.analisis.recomendaciones,
-                "guardado": guardado}
-    finally:
-        bot.cerrar_navegador(preguntar=False)
+    return _correr_sesion("x", tarea, url, max_posts, usuario, informar_avance, redactar)
 
 
 @app.post("/api/x/actividad")
@@ -1413,8 +1489,6 @@ def x_actividad(datos: PedidoActividad, s=Depends(sesion)):
     clasificada = perfil_redes.clasificar_url(datos.url.strip())
     if not clasificada or clasificada[0] != "x":
         raise HTTPException(400, "Indica la URL de un perfil de X: https://x.com/usuario")
-    if not _persona_autorizada(clasificada[1]):
-        raise HTTPException(403, "Ese perfil no está en Personas autorizadas. Agrégalo y marca que autorizó.")
     url = clasificada[1]
     t = tareas.lanzar("extraccion_x", f"Actividad X: {url}", s["usuario"],
                       _correr_x_sesion, url, datos.max_posts, s["usuario"])
@@ -1506,6 +1580,7 @@ def main():
     host = os.getenv("WEB_HOST", "127.0.0.1")
     puerto = int(os.getenv("PORT") or os.getenv("WEB_PUERTO", "8000"))
     print(f"Motor de perfilamiento IA  ->  http://{host}:{puerto}   (Ctrl+C para detener)")
+    print("Lote: solo las URLs pegadas. No se leen Personas autorizadas.")
     uvicorn.run(app, host=host, port=puerto)
 
 

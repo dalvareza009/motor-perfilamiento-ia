@@ -89,6 +89,8 @@ class Tarea(Registro):
         self.resultado = self.error = None
         self.actual, self.total = 0, None
         self.inicio, self.fin = time.time(), None
+        self.cancelada = False
+        self.bot = None
 
     def avance(self, actual, total=None):
         self.actual = actual
@@ -121,12 +123,20 @@ def lanzar(tipo, descripcion, usuario, fn, *args):
         _salida.local.registro = tarea
         try:
             tarea.resultado = fn(tarea, *args)
-            tarea.estado = "terminada"
+            tarea.estado = "cancelada" if tarea.cancelada else "terminada"
         except SystemExit as e:               # los comandos de ingesta avisan errores con SystemExit
-            tarea.error, tarea.estado = str(e.code or "La tarea se detuvo."), "error"
+            if tarea.cancelada:
+                tarea.estado = "cancelada"
+                tarea.error = None
+            else:
+                tarea.error, tarea.estado = str(e.code or "La tarea se detuvo."), "error"
         except Exception as e:
-            tarea.error, tarea.estado = f"{type(e).__name__}: {e}", "error"
-            tarea.escribir(traceback.format_exc())
+            if tarea.cancelada:
+                tarea.estado = "cancelada"
+                tarea.error = None
+            else:
+                tarea.error, tarea.estado = f"{type(e).__name__}: {e}", "error"
+                tarea.escribir(traceback.format_exc())
         finally:
             tarea.cerrar()
             tarea.fin = time.time()
@@ -147,3 +157,38 @@ def obtener(id_tarea):
 def recientes(usuario=None, limite=15):
     lista = [t for t in TAREAS.values() if usuario is None or t.usuario == usuario]
     return sorted(lista, key=lambda t: t.inicio, reverse=True)[:limite]
+
+
+def marcar_cancelada(tarea):
+    """Pide parar. El hilo cierra Chrome en el siguiente perfil."""
+    tarea.cancelada = True
+    bot = getattr(tarea, "bot", None)
+    tarea.bot = None
+    if bot:
+        try:
+            bot.cerrar_navegador(preguntar=False)
+        except Exception:
+            pass
+    try:
+        tarea.escribir("Detenida: no se leen más perfiles.\n")
+    except Exception:
+        pass
+    return tarea
+
+
+def cancelar(id_tarea):
+    t = TAREAS.get(id_tarea)
+    if not t or t.estado != "en_curso":
+        return None
+    return marcar_cancelada(t)
+
+
+def cancelar_tipo(tipo):
+    detenidas = []
+    with _lock:
+        for t in TAREAS.values():
+            if t.estado == "en_curso" and t.tipo == tipo:
+                detenidas.append(t)
+    for t in detenidas:
+        marcar_cancelada(t)
+    return detenidas

@@ -39,10 +39,14 @@ export function vistaMensajes() {
 async function cargar(zona) {
   zona.replaceChildren(cargando());
   try {
-    const filas = await get("/api/mensajes-prueba");
+    const filas = [...await get("/api/mensajes-prueba")].sort((a, b) => {
+      const tb = Date.parse(b.creado_en || "") || 0;
+      const ta = Date.parse(a.creado_en || "") || 0;
+      return tb - ta;
+    });
     zona.replaceChildren(filas.length
       ? h("div", { class: "pila" }, filas.map(prospecto))
-      : vacio("Todavía no hay mensajes. Lee un perfil autorizado y, si el análisis sugiere un producto, aquí aparecen tres opciones.", "whatsapp"));
+      : vacio("Todavía no hay mensajes. Extrae un perfil en Redes y, si el análisis sugiere un producto, aquí aparecen tres opciones.", "whatsapp"));
   } catch (e) {
     zona.replaceChildren(errorCaja(e, () => cargar(zona)));
   }

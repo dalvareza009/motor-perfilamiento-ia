@@ -309,6 +309,59 @@ def test_sugerencias_salen_del_hecho_explicito():
     assert "Seguro de pensión" not in productos
 
 
+def test_lote_acepta_urls_sin_estar_en_el_archivo():
+    from app.ingesta_perfiles import objetivos_desde_urls
+    objetivos, avisos = objetivos_desde_urls([
+        "https://www.instagram.com/ana/",
+        "https://x.com/ana",
+        "no-es-url",
+        "https://www.instagram.com/ana/",
+    ], data=[])
+    assert [p[1]["red"] for p in objetivos] == ["instagram", "x"]
+    assert objetivos[0][0]["nombre"] == ""
+    assert any("no reconocida" in a for a in avisos)
+
+
+def test_lote_solo_usa_las_urls_pegadas():
+    from app.ingesta_perfiles import objetivos_de_pedido
+    vieja = {
+        "nombre": "Persona vieja",
+        "autorizado": True,
+        "autorizacion": "Autorización directa para leer el perfil público.",
+        "urls": ["https://www.instagram.com/vieja/"],
+    }
+    objetivos, _ = objetivos_de_pedido(
+        urls=["https://x.com/nueva"], data=[vieja])
+    assert [p[1]["url"] for p in objetivos] == ["https://x.com/nueva"]
+    vacio, avisos = objetivos_de_pedido(urls=[], nombres=[], todos=False, data=[vieja])
+    assert vacio == []
+    assert avisos
+    todas, _ = objetivos_de_pedido(todos=True, data=[vieja])
+    assert [p[1]["url"] for p in todas] == ["https://www.instagram.com/vieja/"]
+
+
+def test_registrar_une_por_nombre_y_completa_urls():
+    import json
+    import tempfile
+    from pathlib import Path
+    from app import ingesta_perfiles
+    original = ingesta_perfiles.ARCHIVO
+    with tempfile.TemporaryDirectory() as tmp:
+        ingesta_perfiles.ARCHIVO = Path(tmp) / "perfiles_autorizados.json"
+        try:
+            ingesta_perfiles.registrar_perfil_leido(
+                "Ana Gómez", "instagram", "https://www.instagram.com/ana/")
+            ingesta_perfiles.registrar_perfil_leido(
+                "Ana Gómez", "x", "https://x.com/ana")
+            data = json.loads(ingesta_perfiles.ARCHIVO.read_text(encoding="utf-8"))
+            assert len(data) == 1
+            assert data[0]["nombre"] == "Ana Gómez"
+            assert data[0]["autorizado"] is True
+            assert len(data[0]["urls"]) == 2
+        finally:
+            ingesta_perfiles.ARCHIVO = original
+
+
 if __name__ == "__main__":
     for nombre, fn in list(globals().items()):
         if nombre.startswith("test_"):

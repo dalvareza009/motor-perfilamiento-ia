@@ -30,7 +30,8 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
-from linkedin_activity_scraper import LinkedInActivityScraper, parse_fecha_publicacion
+from linkedin_activity_scraper import LinkedInActivityScraper, extraer_red_de, parse_fecha_publicacion
+from app.redes_seguidas import tope_publicaciones
 
 MARCAS_MURO_FB = ("/login", "checkpoint", "/recover", "/reg/")
 NO_DISPONIBLE = ("este contenido no está disponible", "this content isn't available",
@@ -92,6 +93,12 @@ def urls_about(profile_url):
         sep = "&" if "?" in base else "?"
         return [profile_url] + [f"{base}{sep}sk={s}" for s in _SECCIONES_ABOUT]
     return [profile_url] + [f"{base}/{s}" for s in _SECCIONES_ABOUT]
+
+
+def urls_likes_y_seguidos(profile_url):
+    """Páginas de Me gusta, following y seguidores."""
+    from app.redes_seguidas import urls_likes_y_seguidos as _urls
+    return _urls(profile_url)
 
 
 def edad_de_texto(texto, hoy=None):
@@ -195,14 +202,41 @@ def parsear_ficha_facebook(cuerpo, hoy=None):
         info["estado_civil"] = "Estado civil declarado en el perfil: " + ". ".join(dict.fromkeys(civil))
     if familia:
         info["familia"] = "Familia declarada en el perfil: " + ". ".join(dict.fromkeys(familia))
+    presentacion = []
+    capturando = False
+    for linea in texto.splitlines():
+        t = re.sub(r"\s+", " ", linea).strip()
+        bajo = t.lower().strip(" .")
+        if re.fullmatch(r"(presentación|intro|detalles sobre ti)", bajo):
+            capturando = True
+            continue
+        if capturando:
+            if bajo in RUIDO_FICHA or re.match(
+                    r"^(trabajo y educación|información básica|familia y relaciones|lugares de residencia)\b", bajo):
+                capturando = False
+                continue
+            if t and len(t) > 12 and not _parece_nombre(t) and "clima" not in bajo:
+                presentacion.append(t)
+    if presentacion:
+        info["bio"] = " ".join(dict.fromkeys(presentacion))[:400]
     info["acerca"] = "\n".join(filter(None, [
         info["titular"], info["ubicacion"], info["experiencia"], info["educacion"],
-        info["estado_civil"], info["familia"], info["edad"]]))
+        info["estado_civil"], info["familia"], info["edad"], info.get("bio")]))
     for clave, valor in list(info.items()):
         if isinstance(valor, str) and valor:
             info[clave] = quitar_fechas_iso(valor)
     from app.perfil_redes import aplicar_lo_publicado
     return aplicar_lo_publicado(info, [{"tipo": "publicacion", "texto": texto}])
+
+
+def origen_compartida(cabecera, autor=""):
+    """Quién publicó el contenido original cuando esta persona lo compartió."""
+    if not es_compartida(cabecera):
+        return autor
+    hallado = re.search(
+        r"comparti[oó]\s+(?:una publicación de|un video de|una foto de|from)\s+([^\n.]{2,80})",
+        cabecera or "", re.I)
+    return (hallado.group(1).strip()[:120] if hallado else autor)
 
 
 def es_compartida(texto_cabecera):
@@ -367,6 +401,30 @@ class FacebookActivityScraper:
             pass
         self.driver = None
 
+    def _leer_presentacion(self):
+        """Texto libre de la tarjeta Presentación / Intro, si la persona escribió algo."""
+        try:
+            return (self.driver.execute_script("""
+                const titulos = [...document.querySelectorAll('h2, h3, span, div')];
+                for (const h of titulos) {
+                    const t = (h.innerText || '').trim().toLowerCase();
+                    if (t !== 'presentación' && t !== 'intro' && t !== 'detalles sobre ti') continue;
+                    let n = h.parentElement;
+                    for (let i = 0; i < 6 && n; i++, n = n.parentElement) {
+                        const txt = (n.innerText || '').trim();
+                        if (txt.length > 40 && txt.length < 800) {
+                            return txt.split('\\n').filter(l => {
+                                const s = l.trim();
+                                return s.length > 12 && !/^(presentación|intro|detalles sobre ti)$/i.test(s);
+                            }).slice(0, 6).join(' ');
+                        }
+                    }
+                }
+                return '';
+            """) or "").strip()
+        except Exception:
+            return ""
+
     # ---------- perfil y publicaciones ----------
     def extraer_informacion_perfil(self, profile_url):
         print(f"\n👤 Leyendo la ficha personal de Facebook: {profile_url}")
@@ -401,9 +459,14 @@ class FacebookActivityScraper:
                 info["nombre"] = titulo[:120]
         parsed = parsear_ficha_facebook(cuerpo)
         for clave in ("titular", "ubicacion", "acerca", "experiencia", "educacion",
-                      "estado_civil", "familia", "edad", "seguidores"):
+                      "estado_civil", "familia", "edad", "seguidores", "bio"):
             if parsed.get(clave) and not info.get(clave):
                 info[clave] = parsed[clave]
+        bio_dom = self._leer_presentacion()
+        if bio_dom:
+            info["bio"] = bio_dom[:400]
+            if not info.get("titular"):
+                info["titular"] = bio_dom.splitlines()[0][:300]
         if not info["nombre"]:
             for patron in (
                 r"Añadir foto de portada\n([^\n]+)",
@@ -413,14 +476,18 @@ class FacebookActivityScraper:
                 if hallado:
                     info["nombre"] = hallado.group(1).strip()[:120]
                     break
+        info = extraer_red_de(self.driver, "facebook", profile_url, info)
         self.info = info
         self.analisis.info_perfil[profile_url] = info
         print(f"  OK {info['nombre'] or 'Perfil de Facebook'}"
               + (f" · {info['estado_civil']}" if info.get("estado_civil") else "")
               + (f" · {info['edad']}" if info.get("edad") else ""))
+        if info.get("resumen_red"):
+            print(f"  · {info['resumen_red']}")
         return info
 
     def extraer_publicaciones(self, profile_url, max_posts=10):
+        max_posts = tope_publicaciones(max_posts)
         visita = profile_url
         if "?" not in visita and not visita.endswith('/'):
             visita += '/'
@@ -468,9 +535,12 @@ class FacebookActivityScraper:
                         autor = art.find_element(By.CSS_SELECTOR, "strong, h2, h3").text.strip().splitlines()[0][:120]
                     except Exception:
                         pass
+                    compartida = es_compartida(cabecera)
+                    if compartida:
+                        autor = origen_compartida(cabecera, autor)
                     publicaciones.append({
                         'perfil': profile_url, 'urn': 'N/A', 'url_publicacion': '',
-                        'tipo': 'compartida' if es_compartida(cabecera) else 'publicacion',
+                        'tipo': 'compartida' if compartida else 'publicacion',
                         'autor': autor, 'texto': texto, 'tiempo': tiempo,
                         'hashtags': ";".join(self.analisis.extraer_hashtags(texto)),
                         'enlaces': '', 'reacciones': '', 'comentarios': '',
@@ -486,6 +556,9 @@ class FacebookActivityScraper:
             self.driver.execute_script("window.scrollBy(0, 1100);")
             time.sleep(2.5)
         vigentes = self.analisis.filtrar_y_ordenar(publicaciones)
+        from app.redes_seguidas import aplicar_a_info
+        self.info = aplicar_a_info(self.info, posts=vigentes)
+        self.analisis.info_perfil[profile_url] = self.info
         print(f"  ✔ {len(vigentes)} dentro del último año "
               f"({self.analisis.ultimas_descartadas} antiguas descartadas)")
         return vigentes[:max_posts]

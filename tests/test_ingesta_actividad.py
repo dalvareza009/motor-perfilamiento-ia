@@ -31,6 +31,16 @@ def test_ficha_facebook_sale_como_hechos_del_modelo():
     assert "Seguro educativo" in productos
 
 
+def test_la_bio_queda_como_descripcion():
+    hechos = hechos_desde_info({
+        "titular": "Analista",
+        "bio": "Amante del ciclismo y el café en Medellín",
+    })
+    por = {h["categoria"]: h["contenido"] for h in hechos}
+    assert por["Situacion actual"] == "Analista"
+    assert "ciclismo" in por["Descripcion"]
+
+
 def test_ficha_vacia_no_inventa_hechos():
     assert hechos_desde_info({}) == []
     assert hechos_desde_info(None) == []

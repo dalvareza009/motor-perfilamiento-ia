@@ -169,6 +169,20 @@ def test_facebook_detecta_compartidas():
     assert not es_compartida("Ana Gómez")
 
 
+def test_facebook_presentacion_queda_como_bio():
+    from facebook_activity_scraper import parsear_ficha_facebook
+    from app.ingesta_actividad import hechos_desde_info
+    info = parsear_ficha_facebook("""
+    Ana Gómez
+    Presentación
+    Amante del ciclismo y viajar con la familia
+    Trabajo y educación
+    Trabaja en Global Seguros
+    """)
+    assert "ciclismo" in (info.get("bio") or "").lower()
+    assert "ciclismo" in " ".join(h["contenido"] for h in hechos_desde_info(info)).lower()
+
+
 def test_facebook_ficha_separa_casado_estudios_y_trabajo():
     from facebook_activity_scraper import parsear_ficha_facebook
     cuerpo = """
@@ -224,6 +238,8 @@ def test_facebook_solo_guarda_datos_personales():
     assert edad_de_texto("Su hija tiene 8 años. Ella tiene 34 años.", date(2026, 11, 3)) == "34 años"
     assert urls_about("https://www.facebook.com/ana")[1].endswith("/about")
     assert "sk=about_family_and_relationships" in urls_about("https://www.facebook.com/profile.php?id=5")[-2]
+    from facebook_activity_scraper import urls_likes_y_seguidos
+    assert urls_likes_y_seguidos("https://www.facebook.com/ana")[1].endswith("/following")
 
 
 def test_facebook_compartida_pesa_igual_que_propia_y_ficha_manda():

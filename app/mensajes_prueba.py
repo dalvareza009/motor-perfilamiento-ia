@@ -110,8 +110,9 @@ def generar(nombre, url, red, producto, hechos, usuario=None):
             cur.execute("DELETE FROM public.mensajes_prueba WHERE nombre = %s", (nombre,))
             for op in opciones:
                 cur.execute("""INSERT INTO public.mensajes_prueba
-                    (nombre, fuente_url, red, producto, opcion, eslogan, cuerpo, estado, errores_validacion)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (nombre, fuente_url, red, producto, opcion, eslogan, cuerpo, estado,
+                     errores_validacion, creado_en)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s, now())""",
                     (nombre, url, red, producto, op["opcion"], op["eslogan"], op["cuerpo"],
                      op["estado"], Json(op["errores"]) if op["errores"] else None))
         conn.commit()
@@ -121,34 +122,56 @@ def generar(nombre, url, red, producto, hechos, usuario=None):
     return opciones
 
 
+def _marca_tiempo(valor):
+    if hasattr(valor, "isoformat"):
+        return valor.isoformat()
+    return str(valor or "")
+
+
+def agrupar(filas):
+    """Un bloque por persona, el más reciente primero. No ordena por nombre."""
+    grupos = {}
+    for fila in filas:
+        clave = fila.get("nombre") or ""
+        marca = _marca_tiempo(fila.get("creado_en"))
+        if clave not in grupos:
+            grupos[clave] = {
+                "nombre": fila.get("nombre") or "",
+                "fuente_url": fila.get("fuente_url") or "",
+                "red": fila.get("red") or "",
+                "producto": fila.get("producto") or "",
+                "creado_en": marca,
+                "opciones": [],
+            }
+        elif marca > (grupos[clave]["creado_en"] or ""):
+            grupos[clave]["creado_en"] = marca
+            grupos[clave]["fuente_url"] = fila.get("fuente_url") or grupos[clave]["fuente_url"]
+            grupos[clave]["red"] = fila.get("red") or grupos[clave]["red"]
+            grupos[clave]["producto"] = fila.get("producto") or grupos[clave]["producto"]
+        errores = fila.get("errores_validacion")
+        if isinstance(errores, str):
+            errores = json.loads(errores)
+        grupos[clave]["opciones"].append({
+            "opcion": fila.get("opcion"), "eslogan": fila.get("eslogan") or "",
+            "cuerpo": fila.get("cuerpo") or "",
+            "estado": fila.get("estado") or "", "errores": errores or [],
+        })
+    for g in grupos.values():
+        g["opciones"].sort(key=lambda o: o["opcion"] or 0)
+    return sorted(grupos.values(), key=lambda g: g["creado_en"] or "", reverse=True)
+
+
 def listar():
     asegurar_tabla()
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute("""SELECT nombre, fuente_url, red, producto, opcion, eslogan, cuerpo,
-                                  estado, errores_validacion, creado_en
+                                  estado, errores_validacion, creado_en, id_mensaje
                            FROM public.mensajes_prueba
-                           ORDER BY creado_en DESC, nombre, opcion""")
+                           ORDER BY creado_en DESC, id_mensaje DESC, opcion""")
             cols = [d[0] for d in cur.description]
             filas = [dict(zip(cols, row)) for row in cur.fetchall()]
     finally:
         conn.close()
-    grupos, orden = {}, []
-    for fila in filas:
-        clave = fila["nombre"]
-        if clave not in grupos:
-            grupos[clave] = {
-                "nombre": fila["nombre"], "fuente_url": fila["fuente_url"], "red": fila["red"],
-                "producto": fila["producto"], "creado_en": fila["creado_en"].isoformat(),
-                "opciones": [],
-            }
-            orden.append(clave)
-        errores = fila["errores_validacion"]
-        if isinstance(errores, str):
-            errores = json.loads(errores)
-        grupos[clave]["opciones"].append({
-            "opcion": fila["opcion"], "eslogan": fila["eslogan"], "cuerpo": fila["cuerpo"],
-            "estado": fila["estado"], "errores": errores or [],
-        })
-    return [grupos[c] for c in orden]
+    return agrupar(filas)

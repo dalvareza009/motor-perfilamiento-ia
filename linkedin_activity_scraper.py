@@ -65,6 +65,8 @@ except Exception:  # el script copiado fuera del proyecto sigue extrayendo, sin 
     evaluar_publicacion = None
     menciona_salario = lambda texto: False
 
+from app.redes_seguidas import tope_publicaciones
+
 # Marcas de que LinkedIn NO te está dejando pasar con la sesión actual.
 MARCAS_MURO = ("/login", "/uas/login", "/signup", "/checkpoint", "authwall")
 
@@ -75,6 +77,17 @@ _MESES = {"ene": 1, "enero": 1, "feb": 2, "febrero": 2, "mar": 3, "marzo": 3,
           "septiembre": 9, "setiembre": 9, "oct": 10, "octubre": 10,
           "nov": 11, "noviembre": 11, "dic": 12, "diciembre": 12,
           "jan": 1, "apr": 4, "aug": 8, "dec": 12}
+
+
+def extraer_red_de(driver, red, profile_url, info, posts=None):
+    """Llama a extraer_red_social; recarga el módulo si el proceso quedó con una versión vieja."""
+    import importlib
+    from app import redes_seguidas
+    fn = getattr(redes_seguidas, "extraer_red_social", None)
+    if fn is None:
+        redes_seguidas = importlib.reload(redes_seguidas)
+        fn = redes_seguidas.extraer_red_social
+    return fn(driver, red, profile_url, info, posts)
 
 
 def parse_fecha_publicacion(texto, hoy=None):
@@ -707,104 +720,108 @@ class LinkedInActivityScraper:
                     info[destino] = self._limpiar_texto(principal, limite=1500)
             except Exception:
                 continue
+        if info.get("acerca") and not info.get("bio"):
+            info["bio"] = info["acerca"][:400]
+        info = extraer_red_de(self.driver, "linkedin", profile_url, info)
         from app.perfil_redes import quitar_fechas_iso
         for clave, valor in list(info.items()):
             if isinstance(valor, str) and valor and clave != "perfil":
                 info[clave] = quitar_fechas_iso(valor)
         self.info_perfil[profile_url] = info
-        print(f"  ✔ {info['nombre'] or 'Perfil'} · {info['titular'][:70]}")
+        print(f"  ✔ {info['nombre'] or 'Perfil'} · {(info.get('titular') or '')[:70]}")
+        if info.get("resumen_red"):
+            print(f"  · {info['resumen_red']}")
         return info
 
     # ---------- Flujo principal de extracción ----------
     def extraer_publicaciones_perfil(self, profile_url, max_posts=10):
+        max_posts = tope_publicaciones(max_posts)
         if not profile_url.endswith('/'):
             profile_url += '/'
-        activity_url = profile_url + "recent-activity/all/"
-
-        print(f"\n📄 Visitando: {activity_url}")
-        self.driver.get(activity_url)
-        time.sleep(self.gaussian_delay(4, 1.5))
-
-        # Si aquí LinkedIn levanta el muro, no se aborta el perfil en silencio:
-        # se pausa, entras a mano y se reintenta ESTA misma URL.
-        if not self.asegurar_sesion(activity_url, contexto=activity_url):
-            print("  ⚠ Sin sesión tras el intento manual: se salta este perfil, "
-                  "pero el navegador sigue abierto.")
-            return []
-
-        # LinkedIn lo dice tal cual cuando el perfil no tiene actividad visible:
-        # no es un fallo de selectores, es que no hay nada que extraer.
-        try:
-            texto_pagina = self.driver.find_element(By.TAG_NAME, "body").text.lower()
-        except Exception:
-            texto_pagina = ""
-        if any(f in texto_pagina for f in ("no hay actividad en este momento",
-                                           "no recent activity", "nothing to see here")):
-            print("  ℹ LinkedIn muestra «No hay actividad en este momento»: "
-                  "este perfil no tiene actividad visible que extraer.")
-            return []
-
-        contenedor = self.obtener_contenedor_publicaciones() or self.driver
-        # La lista nueva monta las tarjetas con retraso: sin esta espera, el
-        # primer barrido puede llegar antes que las publicaciones.
-        try:
-            WebDriverWait(self.driver, 10).until(lambda d: d.find_elements(
-                By.CSS_SELECTOR,
-                "[data-testid='expandable-text-box'], [data-urn], "
-                "div[role='listitem'][componentkey^='update-card']"))
-        except TimeoutException:
-            pass
         publicaciones, vistos = [], set()
-        # Se recoge tras cada scroll: el lazy-load va añadiendo publicaciones
-        # y un único barrido al final se dejaba las primeras por el camino.
-        for ronda in range(4):
-            posts = self.obtener_publicaciones(contenedor)
-            for post in posts:
-                try:
-                    urn = self.extraer_urn(post)
-                    texto = self.extraer_texto_publicacion(post)
-                    if len(texto) < 5:
-                        continue
-                    clave = urn if urn != "N/A" else re.sub(r"\s+", " ", texto.lower())[:200]
-                    if clave in vistos:
-                        continue
-                    vistos.add(clave)
-                    reacciones, comentarios = self.extraer_metricas(post)
-                    try:
-                        cabecera = (post.text or "")[:400].lower()
-                    except Exception:
-                        cabecera = ""
-                    es_compartida = "han compartido esto" in cabecera or "ha compartido esto" in cabecera
-                    publicaciones.append({
-                        'perfil': profile_url,
-                        'urn': urn,
-                        'url_publicacion': self.url_desde_urn(urn),
-                        'tipo': 'compartida' if es_compartida else (
-                            'publicacion' if ('activity' in urn or 'ugcPost' in urn
-                                              or 'share' in urn) else 'actividad'),
-                        'autor': self.extraer_autor(post),
-                        'texto': texto,
-                        'tiempo': self.extraer_tiempo_publicacion(post),
-                        'hashtags': ";".join(self.extraer_hashtags(texto)),
-                        'enlaces': ";".join(self.extraer_enlaces(post)),
-                        'reacciones': reacciones,
-                        'comentarios': comentarios,
-                        'fecha_extraccion': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    })
-                    print(f"  📝 [{len(publicaciones)}] {texto[:60]}...")
-                    if len(publicaciones) >= max_posts:
-                        break
-                except Exception as e:
-                    print(f"  ⚠ Error en una publicación: {e}")
+        for sufijo in ("recent-activity/reposts/", "recent-activity/all/"):
+            activity_url = profile_url + sufijo
+            print(f"\n📄 Visitando: {activity_url}")
+            self.driver.get(activity_url)
+            time.sleep(self.gaussian_delay(4, 1.5))
+            if not self.asegurar_sesion(activity_url, contexto=activity_url):
+                print("  ⚠ Sin sesión tras el intento manual: se salta este perfil, "
+                      "pero el navegador sigue abierto.")
+                if sufijo.endswith("reposts/"):
                     continue
-            if len(publicaciones) >= max_posts:
-                break
-            self.scroll_progresivo(n_scrolls=1)
-            # El scroll también puede disparar el muro: pausa y reintento.
-            if self._es_muro() and not self.asegurar_sesion(activity_url, contexto=activity_url):
-                break
+                return publicaciones[:max_posts] if publicaciones else []
+            try:
+                texto_pagina = self.driver.find_element(By.TAG_NAME, "body").text.lower()
+            except Exception:
+                texto_pagina = ""
+            if any(f in texto_pagina for f in ("no hay actividad en este momento",
+                                               "no recent activity", "nothing to see here")):
+                print("  ℹ LinkedIn no muestra actividad en este apartado.")
+                continue
+            contenedor = self.obtener_contenedor_publicaciones() or self.driver
+            try:
+                WebDriverWait(self.driver, 10).until(lambda d: d.find_elements(
+                    By.CSS_SELECTOR,
+                    "[data-testid='expandable-text-box'], [data-urn], "
+                    "div[role='listitem'][componentkey^='update-card']"))
+            except TimeoutException:
+                pass
+            tope = max_posts * 2
+            for ronda in range(4):
+                posts = self.obtener_publicaciones(contenedor)
+                for post in posts:
+                    try:
+                        urn = self.extraer_urn(post)
+                        texto = self.extraer_texto_publicacion(post)
+                        if len(texto) < 5:
+                            continue
+                        clave = urn if urn != "N/A" else re.sub(r"\s+", " ", texto.lower())[:200]
+                        if clave in vistos:
+                            continue
+                        vistos.add(clave)
+                        reacciones, comentarios = self.extraer_metricas(post)
+                        try:
+                            cabecera = (post.text or "")[:400].lower()
+                        except Exception:
+                            cabecera = ""
+                        es_compartida = (
+                            sufijo.endswith("reposts/")
+                            or "han compartido esto" in cabecera
+                            or "ha compartido esto" in cabecera
+                            or "reposted" in cabecera
+                            or "reposteo" in cabecera)
+                        publicaciones.append({
+                            'perfil': profile_url,
+                            'urn': urn,
+                            'url_publicacion': self.url_desde_urn(urn),
+                            'tipo': 'compartida' if es_compartida else (
+                                'publicacion' if ('activity' in urn or 'ugcPost' in urn
+                                                  or 'share' in urn) else 'actividad'),
+                            'autor': self.extraer_autor(post),
+                            'texto': texto,
+                            'tiempo': self.extraer_tiempo_publicacion(post),
+                            'hashtags': ";".join(self.extraer_hashtags(texto)),
+                            'enlaces': ";".join(self.extraer_enlaces(post)),
+                            'reacciones': reacciones,
+                            'comentarios': comentarios,
+                            'fecha_extraccion': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        })
+                        print(f"  📝 [{len(publicaciones)}] {texto[:60]}...")
+                        if len(publicaciones) >= tope:
+                            break
+                    except Exception as e:
+                        print(f"  ⚠ Error en una publicación: {e}")
+                        continue
+                if len(publicaciones) >= tope:
+                    break
+                self.scroll_progresivo(n_scrolls=1)
+                if self._es_muro() and not self.asegurar_sesion(activity_url, contexto=activity_url):
+                    break
 
         vigentes = self.filtrar_y_ordenar(publicaciones)
+        from app.redes_seguidas import aplicar_a_info
+        ficha = self.info_perfil.get(profile_url) or {}
+        self.info_perfil[profile_url] = aplicar_a_info(ficha, posts=vigentes)
         if self.ultimas_descartadas:
             print(f"  🗓 {self.ultimas_descartadas} publicación(es) de hace más de "
                   f"un año quedaron fuera de la ventana.")
@@ -840,7 +857,8 @@ class LinkedInActivityScraper:
         # 1) PRIMERO la ficha: lo que el perfil dice de sí mismo pesa más que
         #    cualquier publicación (y mucho más que una compartida).
         for url, info in self.info_perfil.items():
-            for seccion in ("titular", "acerca", "experiencia", "educacion", "estado_civil"):
+            for seccion in ("titular", "acerca", "bio", "experiencia", "educacion", "estado_civil",
+                            "paginas_seguidas", "interacciones", "resumen_red"):
                 texto = info.get(seccion) or ""
                 if len(texto) < 20:
                     continue

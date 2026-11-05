@@ -2,7 +2,7 @@
 import { get, post, put } from "../api.js";
 import { vistaMensajes } from "./mensajes_prueba.js";
 import { abrirCliente, dato } from "../componentes.js";
-import { seguirTarea } from "../tarea.js";
+import { seguirTarea } from "../tarea.js?v=20261104lote2";
 import {
   alerta, badge, cabecera, campo, cargando, conBoton, confirmar, errorCaja, fecha, h, icono, num, pestañas,
   segmentado, selector, tabla, toast, vacio,
@@ -20,7 +20,9 @@ export async function render(cont) {
   const cuerpo = h("div", { class: "pila" });
   const definicion = [
     { id: "mensajes", texto: "Mensajes" },
-    { id: "hechos", texto: "Revisión de hechos" }, { id: "linkedin", texto: "Redes" },
+    { id: "hechos", texto: "Revisión de hechos" },
+    { id: "red", texto: "Seguidores e intereses" },
+    { id: "linkedin", texto: "Redes" },
     { id: "vincular", texto: "Vincular y ofrecer" }, { id: "autorizados", texto: "Personas autorizadas" },
   ];
   const tabs = pestañas(definicion, pestañaActiva, (id) => { pestañaActiva = id; mostrar(); });
@@ -29,23 +31,26 @@ export async function render(cont) {
       : pestañaActiva === "autorizados" ? vistaAutorizados()
         : pestañaActiva === "vincular" ? vistaVincular()
           : pestañaActiva === "linkedin" ? vistaLinkedin()
-            : vistaHechos(refrescarConteo));
+            : pestañaActiva === "red" ? vistaHechos(refrescarConteo, "red")
+              : vistaHechos(refrescarConteo, "ficha"));
   async function refrescarConteo() {
     try {
       const [personas, mensajes] = await Promise.all([
         get("/api/perfiles/personas"),
         get("/api/mensajes-prueba").catch(() => []),
       ]);
-      const pend = personas.reduce((a, p) => a + p.pendientes, 0);
+      const pend = personas.reduce((a, p) => a + (p.pendientes || 0), 0);
+      const pendRed = personas.reduce((a, p) => a + (p.pendientes_red || 0), 0);
       tabs.actualizar(definicion.map((d) => {
         if (d.id === "hechos") return { ...d, n: pend };
+        if (d.id === "red") return { ...d, n: pendRed };
         if (d.id === "mensajes") return { ...d, n: mensajes.length };
         return d;
       }));
     } catch { /* el contador no es crítico */ }
   }
   cont.append(
-    cabecera("Perfiles públicos autorizados", "Solo personas que autorizaron por escrito. Los hechos extraídos quedan pendientes hasta tu revisión y solo los aprobados se usan en los borradores."),
+    cabecera("Perfiles públicos", "Pega las URLs en Redes: el motor lee el nombre en cada red y registra a la persona. Los hechos extraídos quedan pendientes hasta tu revisión y solo los aprobados se usan en los borradores."),
     h("div", { class: "card pila" }, tabs.el, cuerpo));
   mostrar();
   refrescarConteo();
@@ -71,6 +76,7 @@ function mostrarRecomendaciones(res, zona) {
   const ficha = info.nombre || info.titular || info.acerca ? h("div", { class: "card pila-sm" },
     h("strong", {}, info.nombre || "Perfil"),
     info.titular ? h("div", {}, info.titular) : null,
+    info.bio ? h("div", {}, info.bio) : null,
     info.ubicacion ? h("div", { class: "muted pequeño" }, info.ubicacion) : null,
     info.experiencia ? h("div", {}, info.experiencia) : null,
     info.educacion ? h("div", {}, info.educacion) : null,
@@ -80,6 +86,8 @@ function mostrarRecomendaciones(res, zona) {
     info.familia ? h("div", {}, info.familia) : null,
     info.edad ? h("div", {}, info.edad) : null,
     info.logros ? h("div", {}, info.logros) : null,
+    info.resumen_red ? h("div", {}, info.resumen_red) : null,
+    info.paginas_seguidas ? h("div", { class: "muted pequeño" }, info.paginas_seguidas) : null,
     info.interacciones ? h("div", { class: "muted pequeño" }, info.interacciones) : null,
     info.en_x_desde ? h("div", { class: "muted pequeño" }, info.en_x_desde) : null,
     info.seguidores ? h("div", { class: "muted pequeño" }, `${info.seguidores} amigos/seguidores`) : null,
@@ -87,8 +95,8 @@ function mostrarRecomendaciones(res, zona) {
     res.temas_del_perfil && Object.keys(res.temas_del_perfil).length
       ? h("div", {}, `Temas desde la ficha: ${Object.entries(res.temas_del_perfil).map(([t, n]) => `${t} (${n})`).join(", ")}`) : null) : null;
   const resumen = res.solo_perfil
-    ? `Se leyó solo la ficha personal. Quedó en la base: ${num(g.hechos_nuevos)} hecho(s) nuevo(s), ${num(g.hechos_actualizados)} actualizado(s)${g.productos_sugeridos && g.productos_sugeridos.length ? `, productos: ${g.productos_sugeridos.join(", ")}` : ""}. Revisa y aprueba en «Revisión de hechos» para que el modelo los use.`
-    : `${num(res.publicaciones)} publicación(es) del último año analizadas${res.descartadas_antiguas ? `, ${num(res.descartadas_antiguas)} antiguas descartadas` : ""}${res.omitidas_sensibles ? `, ${num(res.omitidas_sensibles)} omitida(s) por tema sensible` : ""}. Quedó en la base: ${num(g.hechos_nuevos)} hecho(s) nuevo(s), ${num(g.hechos_actualizados)} actualizado(s)${g.productos_sugeridos && g.productos_sugeridos.length ? `, productos: ${g.productos_sugeridos.join(", ")}` : ""}${g.intereses ? `, ${num(g.intereses)} interés(es) de publicaciones` : ""}. Revisa y aprueba en «Revisión de hechos» para que el modelo los use.`;
+    ? `Se leyó la ficha personal. Quedó en la base: ${num(g.hechos_nuevos)} hecho(s) nuevo(s), ${num(g.hechos_actualizados)} actualizado(s)${g.productos_sugeridos && g.productos_sugeridos.length ? `, productos: ${g.productos_sugeridos.join(", ")}` : ""}${info.resumen_red ? `. ${info.resumen_red}` : ""}. Revisa la ficha en «Revisión de hechos» y las listas en «Seguidores e intereses».`
+    : `${num(res.publicaciones)} publicación(es) del último año analizadas${res.descartadas_antiguas ? `, ${num(res.descartadas_antiguas)} antiguas descartadas` : ""}${res.omitidas_sensibles ? `, ${num(res.omitidas_sensibles)} omitida(s) por tema sensible` : ""}. Quedó en la base: ${num(g.hechos_nuevos)} hecho(s) nuevo(s), ${num(g.hechos_actualizados)} actualizado(s)${g.productos_sugeridos && g.productos_sugeridos.length ? `, productos: ${g.productos_sugeridos.join(", ")}` : ""}${info.resumen_red ? `. ${info.resumen_red}` : ""}. Revisa la ficha en «Revisión de hechos» y las listas en «Seguidores e intereses».`;
   zona.replaceChildren(h("div", { class: "pila" },
     ficha,
     alerta(resumen, "ok"),
@@ -108,7 +116,7 @@ function mostrarRecomendaciones(res, zona) {
 function mostrarLectura(res, zona) {
   const lista = (res && res.resultados) || [];
   if (!lista.length) {
-    zona.replaceChildren(alerta("No se leyó ningún perfil. Márcalo como autorizado, escribe la autorización y una URL de LinkedIn, Facebook, Instagram o X.", "warn"));
+    zona.replaceChildren(alerta("No se leyó ningún perfil. Pega las URLs en Redes (LinkedIn, Facebook, Instagram o X), una por línea.", "warn"));
     return;
   }
   zona.replaceChildren(h("div", { class: "pila" }, lista.map((item) => {
@@ -217,7 +225,11 @@ function vistaLinkedin() {
 
   // ---------------- Actividad con mi sesión (cookies / perfil de Chrome)
   const urlSesion = h("input", { type: "text", placeholder: "https://www.linkedin.com/in/…" });
-  const maxSesion = h("input", { type: "number", value: "10", min: "1", max: "50", style: { width: "90px" } });
+  const topePosts = (el) => {
+    const n = parseInt(el && el.value, 10);
+    return Number.isFinite(n) ? Math.min(10, Math.max(1, n)) : 10;
+  };
+  const maxSesion = h("input", { type: "number", value: "10", min: "1", max: "10", style: { width: "90px" } });
   const bExtraer = h("button", { class: "btn btn-primario" }, icono("play"), "Extraer actividad y recomendar");
   const zonaSesion = h("div", { class: "pila" });
 
@@ -229,17 +241,55 @@ function vistaLinkedin() {
   bExtraer.addEventListener("click", async () => {
     const url = urlSesion.value.trim();
     if (!url) { toast("Pega la URL del perfil de LinkedIn.", "error"); urlSesion.focus(); return; }
-    const r = await conBoton(bExtraer, () => post("/api/linkedin/actividad", { url, max_posts: Number(maxSesion.value) || 10 }));
+    const r = await conBoton(bExtraer, () => post("/api/linkedin/actividad", { url, max_posts: topePosts(maxSesion) }));
     if (r) lanzarSesion(r.tarea);
   });
   // Si ya había una extracción corriendo (p. ej. cambiaste de pestaña), se retoma.
+  const loteUrls = h("textarea", { rows: 8, placeholder: "https://www.instagram.com/usuario/\nhttps://x.com/usuario\nhttps://www.facebook.com/usuario\nhttps://www.linkedin.com/in/usuario/\nUna URL por línea, entre 20 y 50." });
+  const maxLote = h("input", { type: "number", value: "10", min: "1", max: "10", style: { width: "90px" } });
+  const bLote = h("button", { class: "btn btn-primario" }, icono("play"), "Extraer lote");
+  const zonaLote = h("div", { class: "pila" });
+  function lanzarLote(tarea) {
+    zonaLote.prepend(vigilarLogin(tarea.id),
+      seguirTarea(tarea, { alTerminar: (res, z) => mostrarLectura(res, z) }));
+  }
+  bLote.addEventListener("click", async () => {
+    const urls = loteUrls.value.split(/\n/).map((u) => u.trim()).filter(Boolean);
+    if (!urls.length) { toast("Pega al menos una URL, una por línea.", "error"); loteUrls.focus(); return; }
+    if (urls.length > 50) { toast("El lote admite como máximo 50 perfiles.", "error"); return; }
+    const r = await conBoton(bLote, async () => {
+      let listo = null;
+      try { listo = await get("/api/perfiles/lote"); } catch { listo = null; }
+      if (!listo || listo.solo_urls !== true) {
+        throw new Error(
+          "El servidor que está corriendo es el viejo y se va a Personas autorizadas. "
+          + "Cierra Chrome del motor, en la terminal Ctrl+C, luego: python -m app.api"
+        );
+      }
+      const res = await post("/api/perfiles/lote", { urls, max_posts: topePosts(maxLote) });
+      const tarea = res && res.tarea;
+      if (!res || res.solo_urls !== true || !tarea || tarea.tipo !== "ingesta_lote") {
+        throw new Error("El servidor no tomó las URLs pegadas. Reinicia con: python -m app.api");
+      }
+      if (/autorizad/i.test(tarea.descripcion || "")) {
+        throw new Error("Se iba a leer Personas autorizadas. Se canceló. Reinicia el motor y vuelve a extraer el lote.");
+      }
+      return res;
+    });
+    if (r && r.tarea) {
+      toast(`Lote: ${ (r.urls || urls).length } URL(s) pegadas. No se leen autorizados.`);
+      lanzarLote(r.tarea);
+    }
+  });
   get("/api/tareas").then((ts) => ts.filter((t) => t.tipo === "ingesta_linkedin_sesion" && t.estado === "en_curso")
     .forEach(lanzarSesion)).catch(() => {});
+  get("/api/tareas").then((ts) => ts.filter((t) => t.tipo === "ingesta_lote" && t.estado === "en_curso")
+    .forEach(lanzarLote)).catch(() => {});
 
   // ---------------- Facebook con mi sesión (mismo criterio)
   const urlFb = h("input", { type: "text", placeholder: "https://www.facebook.com/usuario" });
-  const maxFb = h("input", { type: "number", value: "10", min: "1", max: "50", style: { width: "90px" } });
-  const bExtraerFb = h("button", { class: "btn btn-primario" }, icono("play"), "Extraer ficha personal");
+  const maxFb = h("input", { type: "number", value: "10", min: "1", max: "10", style: { width: "90px" } });
+  const bExtraerFb = h("button", { class: "btn btn-primario" }, icono("play"), "Extraer de Facebook");
   const zonaFb = h("div", { class: "pila" });
   function lanzarFb(tarea) {
     zonaFb.prepend(vigilarLogin(tarea.id, "/api/facebook/actividad"),
@@ -248,7 +298,7 @@ function vistaLinkedin() {
   bExtraerFb.addEventListener("click", async () => {
     const url = urlFb.value.trim();
     if (!url) { toast("Pega la URL del perfil de Facebook.", "error"); urlFb.focus(); return; }
-    const r = await conBoton(bExtraerFb, () => post("/api/facebook/actividad", { url, max_posts: Number(maxFb.value) || 10 }));
+    const r = await conBoton(bExtraerFb, () => post("/api/facebook/actividad", { url, max_posts: topePosts(maxFb) }));
     if (r) lanzarFb(r.tarea);
   });
   get("/api/tareas").then((ts) => ts.filter((t) => t.tipo === "extraccion_facebook" && t.estado === "en_curso")
@@ -256,7 +306,7 @@ function vistaLinkedin() {
 
   // ---------------- Instagram con mi sesión (mismo criterio)
   const urlIg = h("input", { type: "text", placeholder: "https://www.instagram.com/usuario/" });
-  const maxIg = h("input", { type: "number", value: "10", min: "1", max: "50", style: { width: "90px" } });
+  const maxIg = h("input", { type: "number", value: "10", min: "1", max: "10", style: { width: "90px" } });
   const bExtraerIg = h("button", { class: "btn btn-primario" }, icono("play"), "Extraer de Instagram y recomendar");
   const zonaIg = h("div", { class: "pila" });
   function lanzarIg(tarea) {
@@ -266,7 +316,7 @@ function vistaLinkedin() {
   bExtraerIg.addEventListener("click", async () => {
     const url = urlIg.value.trim();
     if (!url) { toast("Pega la URL del perfil de Instagram.", "error"); urlIg.focus(); return; }
-    const r = await conBoton(bExtraerIg, () => post("/api/instagram/actividad", { url, max_posts: Number(maxIg.value) || 10 }));
+    const r = await conBoton(bExtraerIg, () => post("/api/instagram/actividad", { url, max_posts: topePosts(maxIg) }));
     if (r) lanzarIg(r.tarea);
   });
   get("/api/tareas").then((ts) => ts.filter((t) => t.tipo === "extraccion_instagram" && t.estado === "en_curso")
@@ -274,7 +324,7 @@ function vistaLinkedin() {
 
   // ---------------- X con mi sesión (mismo criterio)
   const urlX = h("input", { type: "text", placeholder: "https://x.com/usuario" });
-  const maxX = h("input", { type: "number", value: "10", min: "1", max: "50", style: { width: "90px" } });
+  const maxX = h("input", { type: "number", value: "10", min: "1", max: "10", style: { width: "90px" } });
   const bExtraerX = h("button", { class: "btn btn-primario" }, icono("play"), "Extraer de X y recomendar");
   const zonaX = h("div", { class: "pila" });
   function lanzarX(tarea) {
@@ -284,7 +334,7 @@ function vistaLinkedin() {
   bExtraerX.addEventListener("click", async () => {
     const url = urlX.value.trim();
     if (!url) { toast("Pega la URL del perfil de X.", "error"); urlX.focus(); return; }
-    const r = await conBoton(bExtraerX, () => post("/api/x/actividad", { url, max_posts: Number(maxX.value) || 10 }));
+    const r = await conBoton(bExtraerX, () => post("/api/x/actividad", { url, max_posts: topePosts(maxX) }));
     if (r) lanzarX(r.tarea);
   });
   get("/api/tareas").then((ts) => ts.filter((t) => t.tipo === "extraccion_x" && t.estado === "en_curso")
@@ -293,38 +343,46 @@ function vistaLinkedin() {
   cargar();
   return h("div", { class: "pila" },
     h("div", { class: "card pila" },
+      h("h3", {}, "Lote de perfiles (20 a 50)"),
+      alerta("Extraer lote lee únicamente las URLs que pegas (Instagram, Facebook, X o LinkedIn). Si hay una lectura de Personas autorizadas en curso, la detiene. El nombre sale de cada red y se registra al terminar. Publicaciones: de 1 a 10.", "info"),
+      campo("URLs", loteUrls),
+      h("div", { class: "fila", style: { alignItems: "flex-end" } },
+        campo("Publicaciones a analizar (1 a 10)", maxLote),
+        bLote),
+      zonaLote),
+    h("div", { class: "card pila" },
       h("h3", {}, "Actividad con mi sesión (cookies)"),
       alerta("Usa tu sesión guardada (perfil de Chrome + cookies de este equipo) y no se cierra si LinkedIn pide entrar: Chrome queda abierto, inicias sesión tú y pulsas «Ya inicié sesión, continuar». Al terminar verás aquí las recomendaciones con la publicación que las respalda. Solo tu propia cuenta.", "info"),
       h("div", { class: "fila", style: { alignItems: "flex-end" } },
         h("div", { style: { flex: "1", minWidth: "260px" } }, campo("Perfil de LinkedIn", urlSesion)),
-        campo("Máx. publicaciones", maxSesion),
+        campo("Publicaciones (1 a 10)", maxSesion),
         bExtraer),
       zonaSesion),
     h("div", { class: "card pila" },
       h("h3", {}, "Facebook con mi sesión"),
-      alerta("Solo perfiles que están en Personas autorizadas. Se lee la ficha personal: estado civil, edad, profesión, empresa, estudios y relaciones familiares. No se bajan publicaciones. Si Facebook pide entrar, Chrome queda abierto: inicia sesión y pulsa «Ya inicié sesión, continuar».", "info"),
+      alerta("Pega la URL del perfil. Se lee el nombre, la presentación, seguidores, páginas que sigue, grupos, publicaciones y lo que compartió. Si Facebook pide entrar, Chrome queda abierto: inicia sesión y pulsa «Ya inicié sesión, continuar».", "info"),
       h("div", { class: "fila", style: { alignItems: "flex-end" } },
         h("div", { style: { flex: "1", minWidth: "260px" } }, campo("Perfil de Facebook", urlFb)),
-        campo("Máx. publicaciones", maxFb),
+        campo("Publicaciones (1 a 10)", maxFb),
         bExtraerFb),
       zonaFb),
     h("div", { class: "card pila" },
       h("h3", {}, "Instagram con mi sesión"),
-      alerta("Solo perfiles que están en Personas autorizadas. Se analizan los captions, lo que la persona repostea y si se felicita o sube un logro. Los comentarios de otras personas no se guardan como hechos. Si la cuenta es privada, se guarda lo visible y no se leen publicaciones. Si Instagram pide entrar, Chrome queda abierto: inicia sesión y pulsa «Ya inicié sesión, continuar».", "info"),
+      alerta("Pega la URL del perfil. Se lee el nombre, la bio, seguidores, a quién sigue, las publicaciones y el apartado de reposts. Si la cuenta es privada, se guarda lo visible. Si Instagram pide entrar, Chrome queda abierto: inicia sesión y pulsa «Ya inicié sesión, continuar».", "info"),
       h("div", { class: "fila", style: { alignItems: "flex-end" } },
         h("div", { style: { flex: "1", minWidth: "260px" } }, campo("Perfil de Instagram", urlIg)),
-        campo("Máx. publicaciones", maxIg),
+        campo("Publicaciones (1 a 10)", maxIg),
         bExtraerIg),
       zonaIg),
     h("div", { class: "card pila" },
       h("h3", {}, "X con mi sesión"),
-      alerta("Solo perfiles que están en Personas autorizadas. Lee la ficha, las publicaciones del último año, las respuestas y los logros. Si una republicación encaja con un seguro del catálogo, también entra en la recomendación; no se copia como dato personal de quien repostea. Si X pide entrar, usa la ventana de Chrome que se abre (no tu Chrome de siempre). Cuando ya estés dentro, pulsa «Ya inicié sesión, continuar». Si X dice que no puede iniciar sesión, cierra esa ventana y vuelve a extraer.", "info"),
+      alerta("Pega la URL del perfil. Se lee el nombre, la bio, seguidores, following, publicaciones, respuestas, logros y republicaciones. Si X pide entrar, usa la ventana de Chrome que se abre. Cuando ya estés dentro, pulsa «Ya inicié sesión, continuar».", "info"),
       h("div", { class: "fila", style: { alignItems: "flex-end" } },
         h("div", { style: { flex: "1", minWidth: "260px" } }, campo("Perfil de X", urlX)),
-        campo("Máx. publicaciones", maxX),
+        campo("Publicaciones (1 a 10)", maxX),
         bExtraerX),
       zonaX),
-    alerta("Solo se abre el perfil público de quien autorizó por escrito. Si LinkedIn pide iniciar sesión, esa página no se lee. Política y religión se descartan y no se guardan; el salario sí cuenta, como señal de ingresos. El interés aprobado pasa al perfil; el resto no.", "info"),
+    alerta("Se abre el perfil público. El nombre se lee de LinkedIn y la persona queda registrada. Si LinkedIn pide iniciar sesión, esa página no se lee. Política y religión se descartan y no se guardan; el salario sí cuenta, como señal de ingresos. El interés aprobado pasa al perfil; el resto no.", "info"),
     h("div", { class: "fila" }, bLeer),
     zonaTareas,
     segmentado([{ valor: "pendiente", texto: "Pendientes" }, { valor: "aprobado", texto: "Aprobados" }, { valor: "descartado", texto: "Descartados" }],
@@ -334,7 +392,8 @@ function vistaLinkedin() {
 }
 
 // ------------------------------------------------------------------ revisión de hechos
-function vistaHechos(alCambiar) {
+function vistaHechos(alCambiar, grupo = "ficha") {
+  const esRed = grupo === "red";
   let estadoF = "pendiente";
   const persona = selector([{ valor: "", texto: "Todas las personas" }], "");
   const seleccion = new Set();
@@ -368,8 +427,12 @@ function vistaHechos(alCambiar) {
   bAprobar.addEventListener("click", () => operar(bAprobar, "/api/perfiles/hechos/aprobar", { ids: [...seleccion] }));
   bDescartar.addEventListener("click", () => operar(bDescartar, "/api/perfiles/hechos/descartar", { ids: [...seleccion] }));
   bTodos.addEventListener("click", async () => {
-    const ok = await confirmar("¿Aprobar todos los pendientes?", "Se aprobarán TODOS los hechos pendientes de TODAS las personas (no solo los filtrados). Los descartados no se tocan.", { boton: "Aprobar todos" });
-    if (ok) operar(bTodos, "/api/perfiles/hechos/aprobar", { todos: true });
+    const ok = await confirmar("¿Aprobar todos los pendientes?",
+      esRed
+        ? "Se aprobarán todos los seguidores e intereses pendientes (no los hechos de la ficha)."
+        : "Se aprobarán todos los hechos de ficha pendientes (no los seguidores e intereses).",
+      { boton: "Aprobar todos" });
+    if (ok) operar(bTodos, "/api/perfiles/hechos/aprobar", { todos: true, grupo });
   });
 
   function item(x) {
@@ -402,10 +465,18 @@ function vistaHechos(alCambiar) {
     zona.replaceChildren(cargando());
     seleccion.clear();
     try {
-      const filas = await post("/api/perfiles/hechos/lista", { nombre: persona.value, estado: estadoF });
-      total = filas.length;
-      zona.replaceChildren(filas.length ? h("div", { class: "items" }, filas.map(item))
-        : vacio(estadoF === "pendiente" ? "No hay hechos por revisar. Lee perfiles desde «Personas autorizadas»." : "No hay hechos en este estado.", "check"));
+      const filas = await post("/api/perfiles/hechos/lista", {
+        nombre: persona.value, estado: estadoF, grupo, limite: esRed ? 1000 : 500,
+      });
+      const catsRed = new Set(["Seguidor", "Sigue a", "Repost"]);
+      const visibles = (filas || []).filter((x) => esRed ? catsRed.has(x.categoria) : !catsRed.has(x.categoria));
+      total = visibles.length;
+      zona.replaceChildren(visibles.length ? h("div", { class: "items" }, visibles.map(item))
+        : vacio(estadoF === "pendiente"
+          ? (esRed
+            ? "No hay seguidores, cuentas seguidas ni reposts por revisar. Extrae un perfil desde «Redes»."
+            : "No hay hechos por revisar. Extrae perfiles desde «Redes».")
+          : "No hay hechos en este estado.", "check"));
     } catch (e) {
       zona.replaceChildren(errorCaja(e, cargar));
     }
@@ -419,7 +490,9 @@ function vistaHechos(alCambiar) {
       h("div", { style: { minWidth: "260px" } }, campo("Persona", persona)),
       segmentado([{ valor: "pendiente", texto: "Pendientes" }, { valor: "aprobado", texto: "Aprobados" }, { valor: "descartado", texto: "Descartados" }, { valor: "todos", texto: "Todos" }],
         estadoF, (v) => { estadoF = v; cargar(); })),
-    alerta("Revisa que cada hecho sea explícito y correcto. Un «Producto sugerido» es solo una pista para el asesor; el contacto (correo/celular) sirve para completar la ficha del cliente.", "info"),
+    alerta(esRed
+      ? "Solo aparece quién le sigue, a quién o a qué páginas/grupos sigue, y de quién hace repost (X, Instagram, Facebook y LinkedIn). Aprueba cada uno para usarlo como interés."
+      : "Revisa que cada hecho sea explícito y correcto. Un «Producto sugerido» es solo una pista para el asesor; el contacto (correo/celular) sirve para completar la ficha del cliente. Seguidores, páginas que sigue y reposts van en la pestaña de al lado.", "info"),
     h("div", { class: "barra-acciones" }, contador, h("span", { class: "espaciador" }), bTodos, bDescartar, bAprobar),
     zonaLog, zona);
 }
@@ -542,7 +615,7 @@ function vistaAutorizados() {
         pintarAvisos(guardado.avisos);
         toast("Guardé la persona y empecé la lectura.");
       }
-      return post("/api/perfiles/ingesta", { nombres });
+      return post("/api/perfiles/ingesta", nombres.length ? { nombres } : { todos: true });
     }).then((r) => {
       if (r) zonaTareas.prepend(vigilarLogin(r.tarea.id), seguirTarea(r.tarea, { alTerminar: (res, z) => mostrarLectura(res, z) }));
     });
@@ -602,7 +675,7 @@ function vistaAutorizados() {
 
   cargar();
   return h("div", { class: "pila" },
-    alerta("Al leer, se guarda la persona si aún no lo habías hecho y se extrae aquí mismo: LinkedIn con su actividad, Facebook solo la ficha personal, Instagram con descripciones y reposts, y X con publicaciones, respuestas y logros. La información queda en esta pantalla. Redes sigue disponible para repetir una extracción.", "info"),
+    alerta("Esta lista se llena sola cuando extraes URLs en Redes: el nombre sale del perfil. También puedes cargar personas a mano si ya las tienes. Hasta 50 perfiles por corrida.", "info"),
     zonaAvisos,
     h("div", { class: "barra-acciones" }, h("span", { class: "espaciador" }), bLeerTodos, bGuardar),
     zonaTareas, zona);

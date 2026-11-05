@@ -7,7 +7,7 @@ No se escriben CSV: el asesor y los borradores leen PostgreSQL.
 """
 import re
 
-from app import linkedin_texto, perfil_redes
+from app import linkedin_texto, perfil_redes, redes_seguidas
 from app.ingesta_linkedin import (asegurar_tabla as asegurar_actividad, _guardar_interes,
                                   _guardar_publicacion)
 from app.ingesta_perfiles import _guardar, asegurar_tabla as asegurar_hechos
@@ -39,6 +39,9 @@ def hechos_desde_info(info):
     titular = _campo(info.get("titular"))
     if titular:
         perfil_redes._agregar(hechos, "Situacion actual", titular)
+    bio = _campo(info.get("bio"))
+    if bio and perfil_redes._n(bio) != perfil_redes._n(titular):
+        perfil_redes._agregar(hechos, "Descripcion", bio)
     ubicacion = _campo(info.get("ubicacion"))
     if ubicacion:
         perfil_redes._agregar(hechos, "Ubicacion", ubicacion)
@@ -69,13 +72,13 @@ def hechos_desde_info(info):
     interacciones = _campo(info.get("interacciones"))
     if interacciones:
         perfil_redes._agregar(hechos, "Interacciones", interacciones)
-
     cuenta, salida = {}, []
     for hecho in hechos:
         n = cuenta.get(hecho["categoria"], 0) + 1
         cuenta[hecho["categoria"]] = n
         titulo = hecho["categoria"] if n == 1 else f"{hecho['categoria']} ({n})"
         salida.append({**hecho, "titulo": titulo})
+    salida.extend(redes_seguidas.hechos_de_red(info))
     return salida
 
 

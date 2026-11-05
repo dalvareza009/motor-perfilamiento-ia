@@ -14,6 +14,7 @@ import argparse
 import hashlib
 import json
 import os
+import threading
 from pathlib import Path
 
 from app import governance, perfil_redes
@@ -21,6 +22,8 @@ from app.database import get_connection
 
 ARCHIVO = Path(__file__).resolve().parents[1] / "data" / "perfiles_autorizados.json"
 CATEGORIAS_DE_VIDA = ("Trabajo", "Estudios", "Ubicacion", "Familia", "Situacion actual", "Edad", "Interes")
+AUTORIZACION_LOTE = "Perfil leído en el motor: se asume autorización previa."
+_ARCHIVO_LOCK = threading.Lock()
 
 DDL = """
 CREATE TABLE IF NOT EXISTS public.hechos_perfil (
@@ -205,6 +208,132 @@ def _depurar_sobrantes(url, fragmentos):
         conn.close()
 
 
+def _cargar_lista():
+    if not ARCHIVO.is_file():
+        return []
+    try:
+        data = json.loads(ARCHIVO.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _guardar_lista(data):
+    ARCHIVO.parent.mkdir(parents=True, exist_ok=True)
+    temporal = ARCHIVO.with_suffix(".json.tmp")
+    temporal.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporal, ARCHIVO)
+
+
+def registrar_perfil_leido(nombre, red, url, clave_cliente=None):
+    """Guarda a la persona con el nombre que salió de la red. Une por URL o por nombre."""
+    clasificada = perfil_redes.clasificar_url(url)
+    if not clasificada:
+        return None
+    red, limpia = clasificada
+    nombre = str(nombre or "").strip()
+    clave = str(clave_cliente or "").strip()
+
+    def misma_url(u):
+        c = perfil_redes.clasificar_url(str(u))
+        return bool(c) and c[1].rstrip("/") == limpia.rstrip("/")
+
+    with _ARCHIVO_LOCK:
+        data = _cargar_lista()
+        hallada = None
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            if any(misma_url(u) for u in (item.get("urls") or [])):
+                hallada = item
+                break
+        if hallada is None and nombre and len(nombre) >= 3:
+            clave_n = perfil_redes._n(nombre)
+            for item in data:
+                if isinstance(item, dict) and perfil_redes._n(item.get("nombre") or "") == clave_n:
+                    hallada = item
+                    break
+        if hallada is None:
+            hallada = {
+                "nombre": nombre or limpia,
+                "clave_cliente": clave,
+                "autorizado": True,
+                "autorizacion": AUTORIZACION_LOTE,
+                "urls": [limpia],
+            }
+            data.append(hallada)
+        else:
+            actual = str(hallada.get("nombre") or "").strip()
+            if nombre and len(nombre) >= 3 and (len(nombre) > len(actual) or not actual or actual.startswith("http")):
+                hallada["nombre"] = nombre
+            hallada["autorizado"] = True
+            if len(str(hallada.get("autorizacion") or "").strip()) < 15:
+                hallada["autorizacion"] = AUTORIZACION_LOTE
+            urls = [str(u) for u in (hallada.get("urls") or [])]
+            if not any(misma_url(u) for u in urls):
+                urls.append(limpia)
+            hallada["urls"] = urls
+            if clave and not str(hallada.get("clave_cliente") or "").strip():
+                hallada["clave_cliente"] = clave
+        _guardar_lista(data)
+    return hallada
+
+
+def objetivos_desde_urls(urls, data=None):
+    """Una entrada por URL válida. Si ya estaba en el archivo, reutiliza esa persona."""
+    if data is None:
+        data = _cargar_lista()
+    personas, _ = perfil_redes.cargar_autorizados(data)
+    por_url = {}
+    for persona in personas:
+        for entrada in persona.get("urls") or []:
+            por_url[entrada["url"].rstrip("/")] = (persona, entrada)
+    objetivos, vistos, avisos = [], set(), []
+    for cruda in urls or []:
+        clasificada = perfil_redes.clasificar_url((cruda or "").strip())
+        if not clasificada:
+            avisos.append(f"URL no reconocida: {cruda}")
+            continue
+        red, limpia = clasificada
+        clave = limpia.rstrip("/")
+        if clave in vistos:
+            continue
+        vistos.add(clave)
+        if clave in por_url:
+            objetivos.append(por_url[clave])
+            continue
+        persona = {
+            "nombre": "",
+            "clave_cliente": None,
+            "autorizacion": AUTORIZACION_LOTE,
+            "urls": [{"red": red, "url": limpia}],
+        }
+        objetivos.append((persona, {"red": red, "url": limpia}))
+    return objetivos, avisos
+
+
+def objetivos_de_pedido(nombres=None, urls=None, todos=False, data=None):
+    """Solo lo pedido: URLs pegadas, nombres concretos, o el archivo completo si todos=True.
+
+    Un lote de URLs nunca se expande a las personas autorizadas anteriores.
+    """
+    if data is None:
+        data = _cargar_lista()
+    urls_limpias = [str(u).strip() for u in (urls or []) if u and str(u).strip()]
+    if urls_limpias:
+        return objetivos_desde_urls(urls_limpias, data)
+    nombres_limpios = [str(n).strip() for n in (nombres or []) if n and str(n).strip()]
+    if nombres_limpios:
+        pedidas = set(nombres_limpios)
+        data = [p for p in data if isinstance(p, dict) and str(p.get("nombre") or "").strip() in pedidas]
+        personas, avisos = perfil_redes.cargar_autorizados(data)
+        return [(p, u) for p in personas for u in p["urls"]], avisos
+    if todos:
+        personas, avisos = perfil_redes.cargar_autorizados(data)
+        return [(p, u) for p in personas for u in p["urls"]], avisos
+    return [], ["Pega URLs de LinkedIn, Facebook, Instagram o X, una por línea."]
+
+
 def _leer(path):
     archivo = Path(path)
     if not archivo.is_file():
@@ -322,8 +451,19 @@ def cmd_aprobar(args):
     try:
         with conn.cursor() as cur:
             if args.todos:
-                cur.execute("""UPDATE public.hechos_perfil SET activo = TRUE, fecha_actualizacion = now()
-                               WHERE activo = FALSE AND descartado = FALSE""")
+                grupo = getattr(args, "grupo", "") or ""
+                from app.redes_seguidas import CATEGORIAS_RED
+                if grupo == "red":
+                    cur.execute("""UPDATE public.hechos_perfil SET activo = TRUE, fecha_actualizacion = now()
+                                   WHERE activo = FALSE AND descartado = FALSE
+                                     AND categoria = ANY(%s)""", (list(CATEGORIAS_RED),))
+                elif grupo == "ficha":
+                    cur.execute("""UPDATE public.hechos_perfil SET activo = TRUE, fecha_actualizacion = now()
+                                   WHERE activo = FALSE AND descartado = FALSE
+                                     AND NOT (categoria = ANY(%s))""", (list(CATEGORIAS_RED),))
+                else:
+                    cur.execute("""UPDATE public.hechos_perfil SET activo = TRUE, fecha_actualizacion = now()
+                                   WHERE activo = FALSE AND descartado = FALSE""")
             else:
                 cur.execute("""UPDATE public.hechos_perfil SET activo = TRUE, fecha_actualizacion = now()
                                WHERE id_hecho = ANY(%s)""", (args.ids,))

@@ -33,7 +33,8 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
-from linkedin_activity_scraper import LinkedInActivityScraper, parse_fecha_publicacion
+from linkedin_activity_scraper import LinkedInActivityScraper, extraer_red_de, parse_fecha_publicacion
+from app.redes_seguidas import elegir_publicaciones, tope_publicaciones
 
 MARCAS_MURO_IG = ("/accounts/login", "/challenge", "/accounts/suspended")
 _MESES = ("enero", "febrero", "marzo", "abril", "mayo", "junio",
@@ -228,6 +229,10 @@ def parsear_ficha_instagram(cuerpo, nombre_conocido=""):
     if not info["titular"] and resto:
         info["titular"] = resto[0][:300]
     utiles = [p for p in resto if p not in (info["titular"],)][:8]
+    if utiles:
+        info["bio"] = "\n".join(utiles)[:400]
+    elif info.get("titular") and not trabajo:
+        info["bio"] = info["titular"]
     info["acerca"] = "\n".join(filter(None, [
         info["titular"], info["ubicacion"], info["experiencia"],
         info["educacion"], info["estado_civil"], *utiles]))
@@ -425,6 +430,28 @@ class InstagramActivityScraper:
             pass
         return ""
 
+    def _leer_bio(self):
+        """El texto que la persona escribió bajo el nombre, no los recuentos."""
+        try:
+            return (self.driver.execute_script("""
+                const header = document.querySelector('header');
+                if (!header) return '';
+                const ul = header.querySelector('ul');
+                const nombre = ((header.querySelector('h1, h2') || {}).innerText || '').trim();
+                let mejor = '';
+                for (const n of header.querySelectorAll('span, div')) {
+                    if (ul && ul.contains(n)) continue;
+                    const t = (n.innerText || '').trim();
+                    if (!t || t === nombre || t.length < 3 || t.length > 500) continue;
+                    if (/^(seguidores|seguidos|publicaciones|followers|following|posts)$/i.test(t)) continue;
+                    if (/^[\\d.,\\s]+$/.test(t)) continue;
+                    if (t.length >= mejor.length) mejor = t;
+                }
+                return mejor;
+            """) or "").strip()
+        except Exception:
+            return ""
+
     def extraer_informacion_perfil(self, profile_url):
         print(f"\nLeyendo primero la ficha de Instagram: {profile_url}")
         self.driver.get(profile_url)
@@ -441,7 +468,14 @@ class InstagramActivityScraper:
             cuerpo = ""
         header = self._texto_header() or cuerpo
         info = parsear_ficha_instagram(header + "\n" + cuerpo[:2500], self._nombre_visible())
+        bio = self._leer_bio()
+        if bio:
+            info["bio"] = bio[:400]
+            if not info.get("titular"):
+                info["titular"] = bio.splitlines()[0][:300]
         info["perfil"] = profile_url
+        from app.redes_seguidas import handle_de_url
+        info["handle"] = handle_de_url(profile_url, "instagram")
         if info["no_disponible"]:
             print("  Instagram no muestra este perfil.")
         elif info["privado"]:
@@ -449,6 +483,8 @@ class InstagramActivityScraper:
         else:
             print(f"  OK {info['nombre'] or 'Perfil de Instagram'}"
                   + (f" · {info['seguidores']} seguidores" if info.get("seguidores") else ""))
+        if not info.get("privado") and not info.get("no_disponible"):
+            info = extraer_red_de(self.driver, "instagram", profile_url, info)
         self.info = info
         self.analisis.info_perfil[profile_url] = info
         return info
@@ -494,7 +530,9 @@ class InstagramActivityScraper:
         except Exception:
             pass
         try:
+            propio = (self.info.get("handle") or "").lower()
             datos = self.driver.execute_script("""
+                const propio = (arguments[0] || '').toLowerCase();
                 const time = document.querySelector('time');
                 const h1 = document.querySelector('h1');
                 const article = document.querySelector('article') || document.body;
@@ -503,15 +541,20 @@ class InstagramActivityScraper:
                 const alts = [...article.querySelectorAll('img')].map(img => img.alt || '').filter(Boolean);
                 const etiquetas = [...article.querySelectorAll('[aria-label]')]
                     .map(n => n.getAttribute('aria-label') || '').join(' ');
+                const handles = [...article.querySelectorAll('a[href^="/"]')].map(a =>
+                    (a.getAttribute('href') || '').replace(/^\\//,'').replace(/\\/$/,'')
+                ).filter(h => h && !h.includes('/') && !['p','reel','reels','explore','stories'].includes(h.toLowerCase()));
+                const origen = handles.find(h => h.toLowerCase() !== propio) || '';
                 return {
                     datetime: time ? (time.getAttribute('datetime') || '') : '',
                     etiqueta: time ? (time.innerText || '') : '',
                     titulo: h1 ? (h1.innerText || '') : '',
                     articulo: sinComentarios.innerText || '',
                     alts: alts,
+                    origen: origen,
                     repost: /reposte[oó]|reposted|\\brepost\\b/i.test((article.innerText || '') + ' ' + etiquetas)
                 };
-            """) or {}
+            """, propio) or {}
         except Exception:
             return None
         base = caption_de_publicacion(datos.get("titulo") or "", datos.get("articulo") or "")
@@ -523,10 +566,13 @@ class InstagramActivityScraper:
             return None
         tiempo = tiempo_legible(datos.get("etiqueta") or "", datos.get("datetime") or "")
         repost = es_repost_grid or bool(datos.get("repost")) or es_repost(texto[:240])
+        autor = (datos.get("origen") or "").strip() if repost else (self.info.get("nombre") or "")
+        if not autor:
+            autor = self.info.get("nombre") or ""
         return {
             "perfil": profile_url, "urn": "N/A", "url_publicacion": url_post,
             "tipo": "compartida" if repost else "publicacion",
-            "autor": self.info.get("nombre") or "",
+            "autor": autor,
             "texto": texto, "tiempo": tiempo,
             "hashtags": ";".join(self.analisis.extraer_hashtags(texto)),
             "enlaces": "", "reacciones": "", "comentarios": "",
@@ -534,7 +580,7 @@ class InstagramActivityScraper:
         }
 
     def _elegir(self, publicaciones, max_posts):
-        """Captions propios y, aparte, los reposts. Los que encajan con el catálogo entran primero."""
+        """Hasta max_posts en total. Los reposts que encajan con el catálogo entran primero."""
         from app.linkedin_texto import evaluar_publicacion
 
         def de_catalogo(post):
@@ -543,17 +589,13 @@ class InstagramActivityScraper:
             ev = evaluar_publicacion(post.get("texto") or "")
             return not ev["omitida"] and bool(ev["intereses"])
 
-        cupo = {"propia": 0, "compartida": 0}
-        elegidas = []
-        for post in sorted(publicaciones, key=lambda p: 0 if de_catalogo(p) else 1):
-            grupo = "compartida" if post.get("tipo") == "compartida" else "propia"
-            if cupo[grupo] >= max_posts:
-                continue
-            cupo[grupo] += 1
-            elegidas.append(post)
-        return elegidas
+        def grupo_de(post):
+            return "compartida" if post.get("tipo") == "compartida" else "propia"
+
+        return elegir_publicaciones(publicaciones, max_posts, grupo_de, de_catalogo)
 
     def extraer_publicaciones(self, profile_url, max_posts=10):
+        max_posts = tope_publicaciones(max_posts)
         if self.info.get("privado") or self.info.get("no_disponible"):
             print("  Sin publicaciones: la cuenta es privada o no esta disponible.")
             return []
@@ -561,6 +603,18 @@ class InstagramActivityScraper:
         self.driver.get(profile_url if profile_url.endswith("/") else profile_url + "/")
         time.sleep(4)
         enlaces, reposts = self._recoger_enlaces(max_posts * 3)
+        handle = self.info.get("handle") or ""
+        if handle:
+            self.driver.get(f"https://www.instagram.com/{handle}/reposts/")
+            time.sleep(3)
+            self._cerrar_avisos()
+            if "/reposts" in (self.driver.current_url or "").lower():
+                mas, _ = self._recoger_enlaces(max_posts * 2)
+                for url_post in mas:
+                    if url_post not in enlaces:
+                        enlaces.append(url_post)
+                    reposts.add(url_post)
+                print(f"  {len(mas)} en el apartado de reposts")
         publicaciones, recientes, antiguas_seguidas = [], 0, 0
         hoy = datetime.now().date()
         for url_post in enlaces:
@@ -579,11 +633,13 @@ class InstagramActivityScraper:
             print(f"  [{recientes}] {post['texto'][:60]}...")
         vigentes = self._elegir(self.analisis.filtrar_y_ordenar(publicaciones), max_posts)
         self.info = incorporar_datos_importantes(self.info, vigentes)
+        from app.redes_seguidas import aplicar_a_info
+        self.info = aplicar_a_info(self.info, posts=vigentes)
         self.analisis.info_perfil[profile_url] = self.info
         print(f"  OK {len(vigentes)} dentro del ultimo año "
               f"({self.analisis.ultimas_descartadas} antiguas descartadas, "
               f"{sum(1 for p in vigentes if p.get('tipo') == 'compartida')} reposts)")
-        return vigentes
+        return vigentes[:max_posts]
 
     def ejecutar(self, profile_url, max_posts=10):
         if not self.iniciar_navegador():

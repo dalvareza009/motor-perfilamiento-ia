@@ -31,7 +31,8 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 
 from instagram_activity_scraper import tiempo_legible
-from linkedin_activity_scraper import LinkedInActivityScraper, parse_fecha_publicacion
+from linkedin_activity_scraper import LinkedInActivityScraper, extraer_red_de, parse_fecha_publicacion
+from app.redes_seguidas import elegir_publicaciones, tope_publicaciones
 
 MARCAS_MURO_X = ("/i/flow/login", "/login", "/i/flow/signup", "/account/access")
 RUIDO_FICHA = {
@@ -248,6 +249,13 @@ def parsear_ficha_x(datos, nombre_conocido=""):
     if not info["titular"] and resto:
         info["titular"] = resto[0][:300]
     utiles = [p for p in resto if p != info["titular"]][:6]
+    lineas_bio = []
+    for linea in str(datos.get("bio") or "").splitlines():
+        t = quitar_fechas_iso(re.sub(r"\s+", " ", linea).strip())
+        if t and t.lower().strip(" .•·") not in RUIDO_FICHA and not t.lower().startswith("http"):
+            lineas_bio.append(t)
+    if lineas_bio:
+        info["bio"] = " ".join(dict.fromkeys(lineas_bio))[:400]
     info["acerca"] = "\n".join(filter(None, [
         info["titular"], info["ubicacion"], info["en_x_desde"], info["experiencia"],
         info["educacion"], info["familia"], info["logros"], *utiles]))
@@ -276,6 +284,12 @@ def armar_publicacion(item, profile_url, autor="", tipo_forzado=""):
         tipo = "publicacion"
     url_post = url_de_publicacion(item.get("href") or "")
     tiempo = tiempo_legible(item.get("etiqueta") or "", item.get("datetime") or "")
+    if tipo == "compartida":
+        from app.redes_seguidas import handle_de_url
+        origen = handle_de_url(url_post, "x")
+        propio = handle_de_url(profile_url, "x")
+        if origen and origen.lower() != (propio or "").lower():
+            autor = origen
     return {
         "perfil": profile_url, "urn": (url_post.rsplit("/", 1)[-1] if url_post else "N/A"),
         "url_publicacion": url_post, "tipo": tipo, "autor": autor,
@@ -284,6 +298,7 @@ def armar_publicacion(item, profile_url, autor="", tipo_forzado=""):
         "respuestas_n": str(item.get("respuestas") or ""),
         "reposts_n": str(item.get("reposts") or ""),
         "me_gusta": str(item.get("me_gusta") or ""),
+        "contexto_social": social,
         "fecha_extraccion": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
@@ -518,6 +533,8 @@ class XActivityScraper:
         datos = self._leer_encabezado()
         info = parsear_ficha_x(datos)
         info["perfil"] = profile_url
+        from app.redes_seguidas import handle_de_url
+        info["handle"] = handle_de_url(profile_url, "x")
         if info["no_disponible"]:
             print("  X no muestra este perfil.")
         elif info["privado"]:
@@ -525,6 +542,8 @@ class XActivityScraper:
         else:
             print(f"  OK {info['nombre'] or 'Perfil de X'}"
                   + (f" · {info['seguidores']} seguidores" if info.get("seguidores") else ""))
+        if not info.get("privado") and not info.get("no_disponible"):
+            info = extraer_red_de(self.driver, "x", profile_url, info)
         self.info = info
         self.analisis.info_perfil[profile_url] = info
         return info
@@ -571,10 +590,10 @@ class XActivityScraper:
         except Exception:
             return []
 
-    def _recolectar(self, profile_url, tipo_forzado, vistos):
+    def _recolectar(self, profile_url, tipo_forzado, vistos, rondas=8):
         hoy = datetime.now().date()
         antiguas = 0
-        for _ronda in range(6):
+        for _ronda in range(rondas):
             self._expandir_textos()
             time.sleep(0.4)
             for item in self._tweets_visibles():
@@ -600,7 +619,7 @@ class XActivityScraper:
         return vistos
 
     def _elegir(self, publicaciones, max_posts):
-        """Línea, respuestas y destacados por separado. El repost que encaja con el catálogo no se queda fuera."""
+        """Hasta max_posts en total. El repost que encaja con el catálogo entra primero."""
         from app.linkedin_texto import evaluar_publicacion
 
         def repost_de_catalogo(post):
@@ -609,24 +628,20 @@ class XActivityScraper:
             ev = evaluar_publicacion(post.get("texto") or "")
             return not ev["omitida"] and bool(ev["intereses"])
 
-        cupo = {"linea": 0, "compartida": 0, "respuesta": 0, "logro": 0}
-        elegidas = []
-        for post in sorted(publicaciones, key=lambda p: 0 if repost_de_catalogo(p) else 1):
+        def grupo_de(post):
             tipo = post.get("tipo") or "publicacion"
-            grupo = tipo if tipo in ("compartida", "respuesta", "logro") else "linea"
-            if cupo[grupo] >= max_posts:
-                continue
-            cupo[grupo] += 1
-            elegidas.append(post)
-        return elegidas
+            return tipo if tipo in ("compartida", "respuesta", "logro") else "linea"
+
+        return elegir_publicaciones(publicaciones, max_posts, grupo_de, repost_de_catalogo)
 
     def extraer_publicaciones(self, profile_url, max_posts=10):
+        max_posts = tope_publicaciones(max_posts)
         if self.info.get("privado") or self.info.get("no_disponible"):
             print("  Sin publicaciones: la cuenta esta protegida o no esta disponible.")
             self.info["interacciones"] = ""
             return []
         base = profile_url.rstrip("/")
-        print(f"\nLeyendo publicaciones, respuestas y destacados de {base}")
+        print(f"\nLeyendo publicaciones, respuestas, destacados y republicaciones de {base}")
         vistos = {}
         for ruta, tipo in (
             (base, ""),
@@ -646,13 +661,15 @@ class XActivityScraper:
         vigentes = self._elegir(self.analisis.filtrar_y_ordenar(publicaciones), max_posts)
         self.info = incorporar_datos_importantes(self.info, vigentes)
         self.info["interacciones"] = resumir_interacciones(vigentes)
+        from app.redes_seguidas import aplicar_a_info
+        self.info = aplicar_a_info(self.info, posts=vigentes)
         self.analisis.info_perfil[profile_url] = self.info
         print(f"  OK {len(vigentes)} dentro del ultimo año "
               f"({self.analisis.ultimas_descartadas} antiguas descartadas, "
               f"{sum(1 for p in vigentes if p.get('tipo') == 'respuesta')} respuestas, "
               f"{sum(1 for p in vigentes if p.get('tipo') == 'compartida')} republicaciones, "
               f"{sum(1 for p in vigentes if p.get('tipo') == 'logro')} destacados)")
-        return vigentes
+        return vigentes[:max_posts]
 
     def ejecutar(self, profile_url, max_posts=10):
         if not self.iniciar_navegador():

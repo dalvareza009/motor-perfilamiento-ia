@@ -821,6 +821,15 @@ def sugerir_productos(hechos):
             candidatos += ["Seguro de vida", "Seguro de accidentes personales"]
         if JUBILACION.search(n):
             candidatos += ["Seguro de pensión", "Seguro renta vitalicia"]
+        if h["categoria"] in ("Paginas seguidas", "Interacciones", "Interes", "Sigue a",
+                              "Repost", "Seguidor"):
+            n_red = _n((h.get("titulo") or "") + " " + h["contenido"])
+            if ESTUDIOS.search(n_red):
+                candidatos.append("Seguro educativo")
+            if re.search(r"\b(ciclismo|moto|deporte|accidente)\b", n_red):
+                candidatos.append("Seguro de accidentes personales")
+            if re.search(r"\b(ahorro|inversion|banco|finanza)\b", n_red):
+                candidatos.append("Seguro renta voluntaria")
         porque = f"{h['categoria']}: {h['contenido']}"
         for producto in candidatos:
             razones.setdefault(producto, [])
