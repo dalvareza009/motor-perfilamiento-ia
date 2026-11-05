@@ -25,9 +25,9 @@ from psycopg2 import sql
 from pydantic import BaseModel, ConfigDict, Field
 
 from app import tareas  # noqa: I001  (primero: instala la captura de lo que imprimen los comandos)
-from app import (asesor, conocimiento, deduplicacion, embeddings, governance, ingesta_actividad, ingesta_linkedin,
-                 ingesta_perfiles, ingesta_web, mensajes, ollama_client, perfil_redes, redes_seguidas, runtime_nube,
-                 segmentos, sesion_token, vectorizar)
+from app import (asesor, conocimiento, deduplicacion, embeddings, facebook_pagina, governance, ingesta_actividad,
+                 ingesta_linkedin, ingesta_perfiles, ingesta_web, mensajes, ollama_client, perfil_redes, redes_seguidas,
+                 runtime_nube, segmentos, sesion_token, vectorizar)
 from app import main as flujo_perfil
 from app.database import get_connection
 
@@ -1018,22 +1018,25 @@ def perfiles_hechos(datos: FiltroHechos, s=Depends(sesion)):
     nombre = datos.nombre.strip()
     where = {"pendiente": "NOT activo AND NOT descartado", "aprobado": "activo",
              "descartado": "descartado AND NOT activo"}.get(datos.estado, "TRUE")
-    cats_sql = "('Seguidor', 'Sigue a', 'Repost')"
+    cats = list(redes_seguidas.CATEGORIAS_RED)
     if datos.grupo == "red":
-        where += f" AND categoria IN {cats_sql}"
+        where += " AND categoria = ANY(%s)"
+        params = (cats, nombre, nombre, datos.limite)
     else:
-        where += f" AND categoria NOT IN {cats_sql}"
+        where += " AND NOT (categoria = ANY(%s))"
+        params = (cats, nombre, nombre, datos.limite)
     return _consulta(f"""SELECT id_hecho, nombre, clave_cliente, red, fuente_url, categoria, titulo, contenido,
                                 activo, descartado, fecha_actualizacion
                          FROM public.hechos_perfil
                          WHERE {where} AND (%s = '' OR LOWER(nombre) = LOWER(%s))
                          ORDER BY CASE categoria
-                            WHEN 'Seguidor' THEN 0
+                            WHEN 'Gusto' THEN 0
                             WHEN 'Sigue a' THEN 1
                             WHEN 'Repost' THEN 2
-                            ELSE 3 END, titulo, id_hecho DESC
+                            WHEN 'Seguidor' THEN 3
+                            ELSE 4 END, titulo, id_hecho DESC
                          LIMIT %s""",
-                     (nombre, nombre, datos.limite))
+                     params)
 
 
 @app.post("/api/perfiles/hechos/aprobar")
@@ -1435,6 +1438,76 @@ def facebook_continuar(id_tarea: str, s=Depends(sesion)):
 
 @app.post("/api/facebook/actividad/{id_tarea}/cancelar")
 def facebook_cancelar(id_tarea: str, s=Depends(sesion)):
+    exigir(s, "admin_perfiles")
+    return _resolver_espera(id_tarea, "cancelar", s)
+
+
+# -------------------------------------------------- página de Facebook (likes y comentarios)
+class PedidoPaginaFb(BaseModel):
+    url: str = Field(min_length=10, max_length=300)
+    max_posts: int = Field(default=5, ge=1, le=10)
+    max_personas: int = Field(default=30, ge=1, le=50)
+
+
+def _correr_facebook_pagina(tarea, url, max_posts, max_personas, usuario):
+    bot = _abrir_bot("facebook", tarea)
+    if not bot:
+        return {"ok": False, "motivo": "No se confirmó el inicio de sesión en Facebook."}
+    tarea.bot = bot
+    try:
+        return bot.extraer_interactuantes_pagina(
+            url, max_posts=max_posts, max_personas=max_personas, tarea=tarea)
+    finally:
+        tarea.bot = None
+        bot.cerrar_navegador(preguntar=False)
+
+
+@app.get("/api/facebook/pagina")
+def facebook_pagina_listar(pagina: str = "", s=Depends(sesion)):
+    """Personas que ya se leyeron interactuando con una página de Facebook."""
+    exigir(s, "admin_perfiles")
+    url = facebook_pagina.clasificar_url_pagina(pagina.strip()) if pagina.strip() else None
+    if pagina.strip() and not url:
+        raise HTTPException(400, "Indica la URL de una página de Facebook.")
+    return {
+        "personas": facebook_pagina.listar(url),
+        "pagina": url or "",
+        "pagina_defecto": facebook_pagina.PAGINA_DEFECTO,
+    }
+
+
+@app.post("/api/facebook/pagina")
+def facebook_pagina_extraer(datos: PedidoPaginaFb, s=Depends(sesion)):
+    """Lee likes, comentarios y shares de una página y saca la URL de cada perfil."""
+    exigir(s, "admin_perfiles")
+    url = facebook_pagina.clasificar_url_pagina(datos.url.strip())
+    if not url:
+        raise HTTPException(400, "Indica la URL de una página de Facebook: https://www.facebook.com/nombre-de-la-pagina")
+    t = tareas.lanzar(
+        "extraccion_facebook_pagina",
+        f"Página Facebook: {url}",
+        s["usuario"],
+        _correr_facebook_pagina, url, datos.max_posts, datos.max_personas, s["usuario"])
+    governance.registrar(s["usuario"], s["rol"], "leer_facebook_pagina",
+                         {"origen": "web", "url": url, "max_posts": datos.max_posts,
+                          "max_personas": datos.max_personas}, 0)
+    return {"tarea": t.vista(), "pagina": url}
+
+
+@app.get("/api/facebook/pagina/esperas")
+def facebook_pagina_esperas(s=Depends(sesion)):
+    exigir(s, "admin_perfiles")
+    return linkedin_esperas(s)
+
+
+@app.post("/api/facebook/pagina/{id_tarea}/continuar")
+def facebook_pagina_continuar(id_tarea: str, s=Depends(sesion)):
+    exigir(s, "admin_perfiles")
+    return _resolver_espera(id_tarea, "continuar", s)
+
+
+@app.post("/api/facebook/pagina/{id_tarea}/cancelar")
+def facebook_pagina_cancelar(id_tarea: str, s=Depends(sesion)):
     exigir(s, "admin_perfiles")
     return _resolver_espera(id_tarea, "cancelar", s)
 

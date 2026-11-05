@@ -23,6 +23,8 @@ export async function render(cont) {
     { id: "hechos", texto: "Revisión de hechos" },
     { id: "red", texto: "Seguidores e intereses" },
     { id: "linkedin", texto: "Redes" },
+    { id: "pagina", texto: "Página Facebook" },
+    { id: "urls-pagina", texto: "URLs perfiles" },
     { id: "vincular", texto: "Vincular y ofrecer" }, { id: "autorizados", texto: "Personas autorizadas" },
   ];
   const tabs = pestañas(definicion, pestañaActiva, (id) => { pestañaActiva = id; mostrar(); });
@@ -30,21 +32,26 @@ export async function render(cont) {
     pestañaActiva === "mensajes" ? vistaMensajes()
       : pestañaActiva === "autorizados" ? vistaAutorizados()
         : pestañaActiva === "vincular" ? vistaVincular()
+          : pestañaActiva === "urls-pagina" ? vistaUrlsPagina()
+          : pestañaActiva === "pagina" ? vistaPaginaFb()
           : pestañaActiva === "linkedin" ? vistaLinkedin()
             : pestañaActiva === "red" ? vistaHechos(refrescarConteo, "red")
               : vistaHechos(refrescarConteo, "ficha"));
   async function refrescarConteo() {
     try {
-      const [personas, mensajes] = await Promise.all([
+      const [personas, mensajes, pagina] = await Promise.all([
         get("/api/perfiles/personas"),
         get("/api/mensajes-prueba").catch(() => []),
+        get("/api/facebook/pagina").catch(() => ({ personas: [] })),
       ]);
       const pend = personas.reduce((a, p) => a + (p.pendientes || 0), 0);
       const pendRed = personas.reduce((a, p) => a + (p.pendientes_red || 0), 0);
+      const nUrls = ((pagina && pagina.personas) || []).length;
       tabs.actualizar(definicion.map((d) => {
         if (d.id === "hechos") return { ...d, n: pend };
         if (d.id === "red") return { ...d, n: pendRed };
         if (d.id === "mensajes") return { ...d, n: mensajes.length };
+        if (d.id === "urls-pagina") return { ...d, n: nUrls };
         return d;
       }));
     } catch { /* el contador no es crítico */ }
@@ -147,6 +154,157 @@ function vigilarLogin(idTarea, base = "/api/linkedin/actividad") {
     } catch { /* reintenta en el siguiente tick */ }
   }, 2000);
   return zona;
+}
+
+const PAGINA_MAPFRE = "https://www.facebook.com/Mapfreco";
+
+function copiarTexto(texto, ok = "Copiado.") {
+  const t = String(texto || "");
+  if (!t) { toast("No hay nada que copiar.", "error"); return; }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(t).then(() => toast(ok)).catch(() => toast("No se pudo copiar.", "error"));
+    return;
+  }
+  toast("No se pudo copiar.", "error");
+}
+
+function badgesInteraccion(p) {
+  return [
+    p.comentarios ? badge(`${num(p.comentarios)} comentario(s)`, "ok") : null,
+    p.compartidos ? badge(`${num(p.compartidos)} compartido(s)`, "info") : null,
+    p.likes ? badge(`${num(p.likes)} me gusta`, "info") : null,
+  ];
+}
+
+function vistaPaginaFb() {
+  const urlPagina = h("input", { type: "text", value: PAGINA_MAPFRE, placeholder: PAGINA_MAPFRE });
+  const maxPosts = h("input", { type: "number", value: "5", min: "1", max: "10", style: { width: "90px" } });
+  const maxPersonas = h("input", { type: "number", value: "30", min: "1", max: "50", style: { width: "90px" } });
+  const bExtraer = h("button", { class: "btn btn-primario" }, icono("play"), "Extraer interactuantes");
+  const zonaTarea = h("div", { class: "pila" });
+  const zonaLista = h("div", { class: "pila" }, cargando());
+
+  function tarjeta(p) {
+    return h("div", { class: "item", style: { gridTemplateColumns: "1fr" } },
+      h("div", { class: "pila-sm" },
+        h("div", { class: "item-cab" },
+          h("strong", {}, p.nombre || "Sin nombre"),
+          ...badgesInteraccion(p),
+          p.pagina_nombre ? h("span", { class: "muted pequeño" }, p.pagina_nombre) : null),
+        h("a", { href: p.perfil, target: "_blank", rel: "noopener noreferrer", class: "pequeño fila", style: { gap: "4px" } },
+          icono("external"), p.perfil || "Sin enlace de perfil"),
+        p.contacto ? h("div", {}, p.contacto) : null,
+        p.ficha ? h("div", { class: "muted pequeño" }, p.ficha) : null,
+        (p.textos || []).length ? h("div", { class: "item-texto" }, `Comentarios: ${(p.textos || []).join(" · ")}`) : null,
+        p.acercamiento ? h("div", {}, p.acercamiento) : null));
+  }
+
+  function mostrarResultado(res, zona) {
+    if (!res || !res.ok) {
+      zona.replaceChildren(alerta((res && res.motivo) || "No se pudo leer la página.", "warn"));
+      return;
+    }
+    const personas = res.personas || [];
+    zona.replaceChildren(h("div", { class: "pila" },
+      alerta(`Se leyeron ${num(res.publicaciones)} publicación(es) de ${res.pagina_nombre || "la página"}. ${num(personas.length)} persona(s) dieron me gusta, comentaron o compartieron. Las URLs de perfil están en la pestaña «URLs perfiles».`, "ok"),
+      personas.length ? h("div", { class: "items" }, personas.map(tarjeta))
+        : vacio("Nadie apareció en likes, comentarios ni shares de esas publicaciones.", "check")));
+    cargar();
+  }
+
+  async function cargar() {
+    zonaLista.replaceChildren(cargando());
+    try {
+      const filtro = urlPagina.value.trim();
+      const q = filtro ? `?pagina=${encodeURIComponent(filtro)}` : "";
+      const r = await get(`/api/facebook/pagina${q}`);
+      const personas = (r && r.personas) || [];
+      zonaLista.replaceChildren(personas.length
+        ? h("div", { class: "items" }, personas.map(tarjeta))
+        : vacio("Aún no hay interactuantes. Extrae la página MAPFRE (o pega otra URL).", "users"));
+    } catch (e) {
+      zonaLista.replaceChildren(errorCaja(e, cargar));
+    }
+  }
+
+  function lanzar(tarea) {
+    zonaTarea.prepend(
+      vigilarLogin(tarea.id, "/api/facebook/pagina"),
+      seguirTarea(tarea, { alTerminar: (res, z) => mostrarResultado(res, z) }));
+  }
+
+  bExtraer.addEventListener("click", async () => {
+    const url = urlPagina.value.trim();
+    if (!url) { toast("Pega la URL de la página de Facebook.", "error"); urlPagina.focus(); return; }
+    const r = await conBoton(bExtraer, () => post("/api/facebook/pagina", {
+      url,
+      max_posts: Math.min(10, Math.max(1, parseInt(maxPosts.value, 10) || 5)),
+      max_personas: Math.min(50, Math.max(1, parseInt(maxPersonas.value, 10) || 30)),
+    }));
+    if (r && r.tarea) lanzar(r.tarea);
+  });
+  get("/api/tareas").then((ts) => (ts || [])
+    .filter((t) => t.tipo === "extraccion_facebook_pagina" && t.estado === "en_curso")
+    .forEach(lanzar)).catch(() => {});
+  cargar();
+
+  return h("div", { class: "pila" },
+    h("div", { class: "card pila" },
+      h("h3", {}, "Página de Facebook"),
+      alerta("Por defecto se lee MAPFRE Colombia. El motor abre las publicaciones y lista quién les dio me gusta, comentó o compartió. Las URLs de esos perfiles quedan en la pestaña «URLs perfiles». Si Facebook pide entrar, Chrome queda abierto: inicia sesión y pulsa «Ya inicié sesión, continuar».", "info"),
+      campo("URL de la página", urlPagina),
+      h("div", { class: "fila", style: { alignItems: "flex-end" } },
+        campo("Publicaciones (1 a 10)", maxPosts),
+        campo("Personas a fichar (1 a 50)", maxPersonas),
+        bExtraer),
+      zonaTarea),
+    h("h3", {}, "Quién interactuó"),
+    zonaLista);
+}
+
+function vistaUrlsPagina() {
+  const zona = h("div", { class: "pila" }, cargando());
+  const bCopiar = h("button", { class: "btn btn-sm", disabled: true }, icono("copy"), "Copiar todas las URLs");
+  let urls = [];
+
+  bCopiar.addEventListener("click", () => copiarTexto(urls.join("\n"), `${urls.length} URL(s) copiada(s).`));
+
+  function fila(p) {
+    const bUno = h("button", { class: "btn btn-sm btn-fantasma", title: "Copiar URL" }, icono("copy"), "Copiar");
+    bUno.addEventListener("click", (ev) => { ev.preventDefault(); copiarTexto(p.perfil, "URL copiada."); });
+    return h("div", { class: "item", style: { gridTemplateColumns: "1fr" } },
+      h("div", { class: "pila-sm" },
+        h("div", { class: "item-cab" },
+          h("strong", {}, p.nombre || "Sin nombre"),
+          ...badgesInteraccion(p),
+          p.pagina_nombre ? h("span", { class: "muted pequeño" }, p.pagina_nombre) : null,
+          h("span", { class: "espaciador" }), bUno),
+        h("a", { href: p.perfil, target: "_blank", rel: "noopener noreferrer", class: "fila", style: { gap: "6px" } },
+          icono("external"), p.perfil || "Sin URL")));
+  }
+
+  async function cargar() {
+    zona.replaceChildren(cargando());
+    try {
+      const r = await get("/api/facebook/pagina");
+      const personas = ((r && r.personas) || []).filter((p) => p.perfil);
+      urls = [...new Set(personas.map((p) => p.perfil))];
+      bCopiar.disabled = !urls.length;
+      zona.replaceChildren(personas.length
+        ? h("div", { class: "items" }, personas.map(fila))
+        : vacio("Todavía no hay URLs. En «Página Facebook» extrae https://www.facebook.com/Mapfreco; las URLs de quien interactuó aparecen aquí.", "link"));
+    } catch (e) {
+      bCopiar.disabled = true;
+      zona.replaceChildren(errorCaja(e, cargar));
+    }
+  }
+
+  cargar();
+  return h("div", { class: "pila" },
+    h("h3", {}, "URLs de perfiles"),
+    alerta("Una fila por persona que dio me gusta, comentó o compartió. El enlace abre su perfil de Facebook. Puedes copiar una URL o todas.", "info"),
+    h("div", { class: "barra-acciones" }, bCopiar),
+    zona);
 }
 
 // ------------------------------------------------------------------ publicaciones de LinkedIn
@@ -468,7 +626,7 @@ function vistaHechos(alCambiar, grupo = "ficha") {
       const filas = await post("/api/perfiles/hechos/lista", {
         nombre: persona.value, estado: estadoF, grupo, limite: esRed ? 1000 : 500,
       });
-      const catsRed = new Set(["Seguidor", "Sigue a", "Repost"]);
+      const catsRed = new Set(["Seguidor", "Sigue a", "Repost", "Gusto"]);
       const visibles = (filas || []).filter((x) => esRed ? catsRed.has(x.categoria) : !catsRed.has(x.categoria));
       total = visibles.length;
       zona.replaceChildren(visibles.length ? h("div", { class: "items" }, visibles.map(item))
@@ -491,7 +649,7 @@ function vistaHechos(alCambiar, grupo = "ficha") {
       segmentado([{ valor: "pendiente", texto: "Pendientes" }, { valor: "aprobado", texto: "Aprobados" }, { valor: "descartado", texto: "Descartados" }, { valor: "todos", texto: "Todos" }],
         estadoF, (v) => { estadoF = v; cargar(); })),
     alerta(esRed
-      ? "Solo aparece quién le sigue, a quién o a qué páginas/grupos sigue, y de quién hace repost (X, Instagram, Facebook y LinkedIn). Aprueba cada uno para usarlo como interés."
+      ? "Aparecen los gustos (finanzas, deporte, moda, nutrición, etc.) según páginas que sigue e interacciones, más seguidores, cuentas seguidas y reposts. Aprueba cada uno para usarlo al acercarte o recomendar."
       : "Revisa que cada hecho sea explícito y correcto. Un «Producto sugerido» es solo una pista para el asesor; el contacto (correo/celular) sirve para completar la ficha del cliente. Seguidores, páginas que sigue y reposts van en la pestaña de al lado.", "info"),
     h("div", { class: "barra-acciones" }, contador, h("span", { class: "espaciador" }), bTodos, bDescartar, bAprobar),
     zonaLog, zona);

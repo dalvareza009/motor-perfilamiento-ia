@@ -13,6 +13,7 @@ CATEGORIAS_RED = (
     "Seguidor",
     "Sigue a",
     "Repost",
+    "Gusto",
 )
 
 RUIDO = {
@@ -419,7 +420,7 @@ def aplicar_a_info(info, seguidas=None, seguidores=None, sigue_a=None,
     return info
 
 
-def hechos_de_red(info):
+def hechos_de_red(info, posts=None):
     """Un hecho por persona/página, para la pestaña de seguidores e intereses."""
     info = info or {}
     hechos = []
@@ -442,6 +443,8 @@ def hechos_de_red(info):
     for nombre, n in info.get("reposts") or []:
         veces = "un repost" if n == 1 else f"{n} reposts"
         agregar("Repost", nombre, f"{dueno} compartió o reposteó contenido de esta cuenta ({veces}).")
+    from app.gustos import hechos_de_gustos
+    hechos.extend(hechos_de_gustos(info, posts=posts))
     return hechos
 
 

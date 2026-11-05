@@ -59,7 +59,9 @@ def test_hechos_solo_seguidor_sigue_a_y_repost():
     assert "Interes" not in por_cat
     assert "Resumen red" not in por_cat
     assert "Interaccion frecuente" not in por_cat
-    assert set(CATEGORIAS_RED) <= set(por_cat)
+    assert {"Seguidor", "Sigue a", "Repost", "Gusto"} <= set(por_cat)
+    assert any("Deportes" in t for t in por_cat["Gusto"])
+    assert any("Educacion" in t for t in por_cat["Gusto"])
     productos = {s["titulo"] for s in sugerir_productos(hechos)}
     assert "Seguro educativo" in productos
     assert "Seguro de accidentes personales" in productos
@@ -124,6 +126,31 @@ def test_extraer_red_social_existe():
     from app import redes_seguidas
     assert callable(extraer_red_social)
     assert extraer_red_social is redes_seguidas.extraer_red_social
+
+
+def test_clasifica_gustos_de_paginas_e_interacciones():
+    from app.gustos import clasificar, hechos_de_gustos, producto_de_gusto
+    assert "Deportes" in clasificar("Federación Colombiana de Ciclismo")
+    assert "Educacion" in clasificar("Universidad EAFIT")
+    assert "Finanzas" in clasificar("Bancolombia Inversiones")
+    assert "Nutricion" in clasificar("Nutrición saludable Medellín")
+    assert "Moda" in clasificar("Zara moda")
+    assert "Entretenimiento" in clasificar("Netflix")
+    assert clasificar("Carlos Pérez") == []
+    hechos = hechos_de_gustos(
+        {"nombre": "Ana Gómez", "sigue_a": ["Bancolombia", "Gym Medellín"]},
+        posts=[{"tipo": "compartida", "autor": "Netflix",
+                "texto": "Nueva serie este fin de semana en la plataforma."}],
+    )
+    titulos = {h["titulo"] for h in hechos}
+    assert "Gusto · Finanzas" in titulos
+    assert "Gusto · Deportes" in titulos
+    assert "Gusto · Entretenimiento" in titulos
+    finanzas = next(h for h in hechos if h["titulo"] == "Gusto · Finanzas")
+    assert "Bancolombia" in finanzas["contenido"]
+    assert "Cómo acercarse" in finanzas["contenido"]
+    assert "Seguro renta voluntaria" in finanzas["contenido"]
+    assert producto_de_gusto("Gusto · Deportes") == "Seguro de accidentes personales"
 
 
 def test_el_tope_es_el_total_no_un_cupo_por_tipo():
