@@ -1,6 +1,7 @@
 """Página de Facebook: URLs, likes/comentarios y cómo acercarse."""
-from app.facebook_pagina import (acercamiento, clasificar_url_pagina, fusionar,
-                                 url_perfil_facebook)
+from app.facebook_pagina import (acercamiento, clave_perfil, clasificar_reaccion, clasificar_url_pagina,
+                                 es_conocida, fusionar, hechos_de_interactuante, separar_nuevas,
+                                 tono_comentario, url_perfil_facebook)
 
 
 def test_acepta_url_de_pagina_facebook():
@@ -88,6 +89,58 @@ def test_fusiona_share_con_like_y_comentario():
     texto = acercamiento(p, "MAPFRE")
     assert "Compartió" in texto
     assert "me gusta" in texto.lower()
+
+
+def test_separa_reacciones_positivas_y_negativas():
+    assert clasificar_reaccion("Me encanta, 8") == ("positiva", "Me encanta")
+    assert clasificar_reaccion("Me enoja, 2 personas") == ("negativa", "Me enoja")
+    assert clasificar_reaccion("Me entristece") == ("negativa", "Me entristece")
+    pagina = "https://www.facebook.com/Mapfreco"
+    personas = []
+    fusionar(personas, {
+        "href": "https://www.facebook.com/ana.perez", "nombre": "Ana Pérez",
+        "tipo": "positiva", "reaccion": "Me encanta", "pagina": pagina,
+    })
+    fusionar(personas, {
+        "href": "https://www.facebook.com/ana.perez", "nombre": "Ana Pérez",
+        "tipo": "negativa", "reaccion": "Me enoja", "pagina": pagina,
+    })
+    p = personas[0]
+    assert p["reacciones_pos"] == 1 and p["reacciones_neg"] == 1
+    assert "Me encanta" in p["reacciones"] and "Me enoja" in p["reacciones"]
+    texto = acercamiento(p, "MAPFRE")
+    assert "positiva" in texto.lower()
+    assert "negativa" in texto.lower()
+
+
+def test_comentario_acotado_en_la_ficha():
+    assert tono_comentario("Esto es una estafa, pésimo servicio") == "desagrado"
+    assert tono_comentario("Gracias, me interesa el seguro de vida") == "interés"
+    persona = {
+        "nombre": "Ana Pérez",
+        "perfil": "https://www.facebook.com/ana.perez",
+        "textos": ["Quiero saber de accidentes en moto"],
+        "reacciones_pos": 1, "reacciones_neg": 0, "reacciones": ["Me gusta"],
+    }
+    hechos = hechos_de_interactuante(persona, "MAPFRE")
+    comentarios = [h for h in hechos if h["categoria"] == "Comentario"]
+    assert comentarios and "Quiero saber de accidentes" in comentarios[0]["contenido"]
+    assert "le interesa" in comentarios[0]["contenido"]
+    assert any(h["categoria"] == "Reaccion" for h in hechos)
+
+
+def test_omite_personas_que_ya_estan_en_la_base():
+    conocidas = {clave_perfil("https://www.facebook.com/ana.perez")}
+    assert es_conocida("https://www.facebook.com/ana.perez?comment_id=9", conocidas)
+    assert not es_conocida("https://www.facebook.com/juan.gomez", conocidas)
+    personas = [
+        {"nombre": "Ana Pérez", "perfil": "https://www.facebook.com/ana.perez", "comentarios": 1},
+        {"nombre": "Juan Gómez", "perfil": "https://www.facebook.com/juan.gomez", "comentarios": 1},
+    ]
+    nuevas, repetidas = separar_nuevas(personas, conocidas)
+    assert [p["nombre"] for p in nuevas] == ["Juan Gómez"]
+    assert [p["nombre"] for p in repetidas] == ["Ana Pérez"]
+    assert nuevas[0].get("nueva") is True
 
 
 if __name__ == "__main__":

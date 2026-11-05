@@ -64,6 +64,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS intereses_linkedin_unicos
     ON public.intereses_linkedin (id_publicacion, tema, producto);
 ALTER TABLE public.publicaciones_linkedin ADD COLUMN IF NOT EXISTS red TEXT NOT NULL DEFAULT 'linkedin';
 ALTER TABLE public.intereses_linkedin ADD COLUMN IF NOT EXISTS red TEXT NOT NULL DEFAULT 'linkedin';
+ALTER TABLE public.publicaciones_linkedin ADD COLUMN IF NOT EXISTS url_publicacion TEXT NOT NULL DEFAULT '';
+ALTER TABLE public.publicaciones_linkedin ADD COLUMN IF NOT EXISTS tipo TEXT NOT NULL DEFAULT 'publicacion';
+ALTER TABLE public.publicaciones_linkedin ADD COLUMN IF NOT EXISTS resumen TEXT NOT NULL DEFAULT '';
+ALTER TABLE public.publicaciones_linkedin ADD COLUMN IF NOT EXISTS tiene_imagenes BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE public.publicaciones_linkedin ADD COLUMN IF NOT EXISTS n_imagenes INTEGER NOT NULL DEFAULT 0;
 """
 
 
@@ -157,10 +162,16 @@ def _guardar_publicacion(persona, url, post, red="linkedin"):
             if fila:
                 return fila[0], False
             cur.execute("""INSERT INTO public.publicaciones_linkedin
-                           (clave_cliente, nombre, fuente_url, urn, texto, tiempo, hash_contenido, red)
-                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id_publicacion""",
+                           (clave_cliente, nombre, fuente_url, urn, texto, tiempo, hash_contenido, red,
+                            url_publicacion, tipo, resumen, tiene_imagenes, n_imagenes)
+                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id_publicacion""",
                         (persona.get("clave_cliente"), persona["nombre"], url,
-                         post.get("urn") or None, post["texto"], post.get("tiempo") or None, h, red))
+                         post.get("urn") or None, post["texto"], post.get("tiempo") or None, h, red,
+                         (post.get("url_publicacion") or post.get("url") or "")[:500],
+                         (post.get("tipo") or "publicacion")[:40],
+                         (post.get("resumen") or "")[:500],
+                         bool(post.get("tiene_imagenes")),
+                         int(post.get("n_imagenes") or 0)))
             nuevo = cur.fetchone()[0]
         conn.commit()
         return nuevo, True

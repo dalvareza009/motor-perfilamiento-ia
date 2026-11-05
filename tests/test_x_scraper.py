@@ -113,9 +113,9 @@ def test_de_las_publicaciones_salen_logros_e_interacciones():
         "texto": "Con mi hija celebramos su grado en la Universidad EAFIT. Tengo 34 años. Me gradué con premio.",
     }])
     assert "hija" in info["familia"].lower()
-    assert "Universidad EAFIT" in info["educacion"]
+    assert "Universidad EAFIT" not in (info.get("educacion") or "")
     assert info["edad"] == "Tengo 34 años"
-    assert "premio" in info["logros"].lower()
+    assert "premio" not in (info.get("logros") or "").lower()
     resumen = resumir_interacciones([
         {"tipo": "respuesta", "respuestas_n": "3 respuestas", "reposts_n": "1", "me_gusta": "10 Me gusta"},
         {"tipo": "compartida", "respuestas_n": "99", "reposts_n": "99", "me_gusta": "99"},
@@ -151,7 +151,8 @@ def test_el_repost_del_catalogo_entra_y_no_se_copia_como_dato_personal():
         {"tipo": "publicacion", "texto": "Me gradué con premio en la maestría."},
     ])
     assert not info.get("familia")
-    assert "premio" in info["logros"].lower()
+    assert "premio" not in (info.get("logros") or "").lower()
+    assert "maestr" in (info.get("educacion") or info.get("estado_academico") or "").lower()
 
 
 def test_se_reservan_cupos_para_respuestas_y_logros():

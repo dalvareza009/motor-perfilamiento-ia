@@ -1,5 +1,5 @@
 // Perfiles públicos autorizados: quién autorizó, lectura, revisión de hechos, redes y vínculo con clientes.
-import { get, post, put } from "../api.js";
+import { del, get, post, put } from "../api.js";
 import { vistaMensajes } from "./mensajes_prueba.js";
 import { abrirCliente, dato } from "../componentes.js";
 import { seguirTarea } from "../tarea.js?v=20261104lote2";
@@ -21,6 +21,7 @@ export async function render(cont) {
   const definicion = [
     { id: "mensajes", texto: "Mensajes" },
     { id: "hechos", texto: "Revisión de hechos" },
+    { id: "contenido", texto: "Revisión contenido" },
     { id: "red", texto: "Seguidores e intereses" },
     { id: "linkedin", texto: "Redes" },
     { id: "pagina", texto: "Página Facebook" },
@@ -28,6 +29,7 @@ export async function render(cont) {
     { id: "vincular", texto: "Vincular y ofrecer" }, { id: "autorizados", texto: "Personas autorizadas" },
   ];
   const tabs = pestañas(definicion, pestañaActiva, (id) => { pestañaActiva = id; mostrar(); });
+  tabs.el.classList.add("pestañas-deslizar");
   const mostrar = () => cuerpo.replaceChildren(
     pestañaActiva === "mensajes" ? vistaMensajes()
       : pestañaActiva === "autorizados" ? vistaAutorizados()
@@ -36,13 +38,15 @@ export async function render(cont) {
           : pestañaActiva === "pagina" ? vistaPaginaFb()
           : pestañaActiva === "linkedin" ? vistaLinkedin()
             : pestañaActiva === "red" ? vistaHechos(refrescarConteo, "red")
+              : pestañaActiva === "contenido" ? vistaContenido()
               : vistaHechos(refrescarConteo, "ficha"));
   async function refrescarConteo() {
     try {
-      const [personas, mensajes, pagina] = await Promise.all([
+      const [personas, mensajes, pagina, pubs] = await Promise.all([
         get("/api/perfiles/personas"),
         get("/api/mensajes-prueba").catch(() => []),
         get("/api/facebook/pagina").catch(() => ({ personas: [] })),
+        post("/api/perfiles/contenido", { limite: 1 }).catch(() => ({ total: 0 })),
       ]);
       const pend = personas.reduce((a, p) => a + (p.pendientes || 0), 0);
       const pendRed = personas.reduce((a, p) => a + (p.pendientes_red || 0), 0);
@@ -50,6 +54,7 @@ export async function render(cont) {
       tabs.actualizar(definicion.map((d) => {
         if (d.id === "hechos") return { ...d, n: pend };
         if (d.id === "red") return { ...d, n: pendRed };
+        if (d.id === "contenido") return { ...d, n: pubs.total || 0 };
         if (d.id === "mensajes") return { ...d, n: mensajes.length };
         if (d.id === "urls-pagina") return { ...d, n: nUrls };
         return d;
@@ -57,8 +62,8 @@ export async function render(cont) {
     } catch { /* el contador no es crítico */ }
   }
   cont.append(
-    cabecera("Perfiles públicos", "Pega las URLs en Redes: el motor lee el nombre en cada red y registra a la persona. Los hechos extraídos quedan pendientes hasta tu revisión y solo los aprobados se usan en los borradores."),
-    h("div", { class: "card pila" }, tabs.el, cuerpo));
+    cabecera("Perfiles públicos", "Pega las URLs en Redes: el motor lee el nombre en cada red y registra a la persona. La ficha (estudios, cargos, logros) va a «Revisión de hechos»; lo que publica va a «Revisión contenido». Las dos salen del mismo scraping."),
+    h("div", { class: "card pila", style: { minWidth: "0", maxWidth: "100%" } }, tabs.el, cuerpo));
   mostrar();
   refrescarConteo();
 }
@@ -102,8 +107,8 @@ function mostrarRecomendaciones(res, zona) {
     res.temas_del_perfil && Object.keys(res.temas_del_perfil).length
       ? h("div", {}, `Temas desde la ficha: ${Object.entries(res.temas_del_perfil).map(([t, n]) => `${t} (${n})`).join(", ")}`) : null) : null;
   const resumen = res.solo_perfil
-    ? `Se leyó la ficha personal. Quedó en la base: ${num(g.hechos_nuevos)} hecho(s) nuevo(s), ${num(g.hechos_actualizados)} actualizado(s)${g.productos_sugeridos && g.productos_sugeridos.length ? `, productos: ${g.productos_sugeridos.join(", ")}` : ""}${info.resumen_red ? `. ${info.resumen_red}` : ""}. Revisa la ficha en «Revisión de hechos» y las listas en «Seguidores e intereses».`
-    : `${num(res.publicaciones)} publicación(es) del último año analizadas${res.descartadas_antiguas ? `, ${num(res.descartadas_antiguas)} antiguas descartadas` : ""}${res.omitidas_sensibles ? `, ${num(res.omitidas_sensibles)} omitida(s) por tema sensible` : ""}. Quedó en la base: ${num(g.hechos_nuevos)} hecho(s) nuevo(s), ${num(g.hechos_actualizados)} actualizado(s)${g.productos_sugeridos && g.productos_sugeridos.length ? `, productos: ${g.productos_sugeridos.join(", ")}` : ""}${info.resumen_red ? `. ${info.resumen_red}` : ""}. Revisa la ficha en «Revisión de hechos» y las listas en «Seguidores e intereses».`;
+    ? `Se leyó la ficha personal. Quedó en la base: ${num(g.hechos_nuevos)} hecho(s) nuevo(s), ${num(g.hechos_actualizados)} actualizado(s)${g.productos_sugeridos && g.productos_sugeridos.length ? `, productos: ${g.productos_sugeridos.join(", ")}` : ""}${info.resumen_red ? `. ${info.resumen_red}` : ""}. La información va a «Revisión de hechos»; las publicaciones, a «Revisión contenido».`
+    : `${num(res.publicaciones)} publicación(es) del último año analizadas${res.descartadas_antiguas ? `, ${num(res.descartadas_antiguas)} antiguas descartadas` : ""}${res.omitidas_sensibles ? `, ${num(res.omitidas_sensibles)} omitida(s) por tema sensible` : ""}. Quedó en la base: ${num(g.hechos_nuevos)} hecho(s) nuevo(s), ${num(g.hechos_actualizados)} actualizado(s)${num(g.publicaciones) ? `, ${num(g.publicaciones)} publicación(es) en contenido` : ""}${g.productos_sugeridos && g.productos_sugeridos.length ? `, productos: ${g.productos_sugeridos.join(", ")}` : ""}${info.resumen_red ? `. ${info.resumen_red}` : ""}. Revisa la ficha en «Revisión de hechos» y lo publicado en «Revisión contenido».`;
   zona.replaceChildren(h("div", { class: "pila" },
     ficha,
     alerta(resumen, "ok"),
@@ -169,33 +174,48 @@ function copiarTexto(texto, ok = "Copiado.") {
 }
 
 function badgesInteraccion(p) {
+  const pos = p.reacciones_pos || p.likes;
   return [
     p.comentarios ? badge(`${num(p.comentarios)} comentario(s)`, "ok") : null,
     p.compartidos ? badge(`${num(p.compartidos)} compartido(s)`, "info") : null,
-    p.likes ? badge(`${num(p.likes)} me gusta`, "info") : null,
+    pos ? badge(`${num(pos)} reacción(es) +`, "ok") : null,
+    p.reacciones_neg ? badge(`${num(p.reacciones_neg)} reacción(es) −`, "warn") : null,
   ];
 }
 
 function vistaPaginaFb() {
-  const urlPagina = h("input", { type: "text", value: PAGINA_MAPFRE, placeholder: PAGINA_MAPFRE });
+  const urlPagina = h("input", { type: "text", value: PAGINA_MAPFRE, placeholder: "https://www.facebook.com/otra-aseguradora" });
   const maxPosts = h("input", { type: "number", value: "5", min: "1", max: "10", style: { width: "90px" } });
   const maxPersonas = h("input", { type: "number", value: "30", min: "1", max: "50", style: { width: "90px" } });
   const bExtraer = h("button", { class: "btn btn-primario" }, icono("play"), "Extraer interactuantes");
+  const bAddPagina = h("button", { class: "btn btn-sm" }, icono("plus"), "Añadir página");
+  const zonaPaginas = h("div", { class: "fila", style: { flexWrap: "wrap", gap: "8px" } });
   const zonaTarea = h("div", { class: "pila" });
   const zonaLista = h("div", { class: "pila" }, cargando());
+  const urlsGen = h("textarea", { rows: "3", placeholder: "https://www.facebook.com/usuario\nhttps://www.instagram.com/usuario/" });
+  const bAddGen = h("button", { class: "btn btn-sm" }, icono("plus"), "Añadir perfiles");
+  const bLeerGen = h("button", { class: "btn btn-sm btn-primario" }, icono("play"), "Leer interacciones");
+  const zonaGen = h("div", { class: "pila" });
+  const zonaTareaGen = h("div", { class: "pila" });
 
   function tarjeta(p) {
+    const comentarios = (p.textos || []).filter(Boolean);
     return h("div", { class: "item", style: { gridTemplateColumns: "1fr" } },
       h("div", { class: "pila-sm" },
         h("div", { class: "item-cab" },
           h("strong", {}, p.nombre || "Sin nombre"),
+          p.nueva ? badge("Nueva", "ok") : null,
           ...badgesInteraccion(p),
           p.pagina_nombre ? h("span", { class: "muted pequeño" }, p.pagina_nombre) : null),
         h("a", { href: p.perfil, target: "_blank", rel: "noopener noreferrer", class: "pequeño fila", style: { gap: "4px" } },
           icono("external"), p.perfil || "Sin enlace de perfil"),
         p.contacto ? h("div", {}, p.contacto) : null,
         p.ficha ? h("div", { class: "muted pequeño" }, p.ficha) : null,
-        (p.textos || []).length ? h("div", { class: "item-texto" }, `Comentarios: ${(p.textos || []).join(" · ")}`) : null,
+        (p.reacciones || []).length ? h("div", { class: "muted pequeño" }, `Reacciones: ${(p.reacciones || []).join(", ")}`) : null,
+        comentarios.length
+          ? h("div", { class: "pila-sm" }, h("strong", { class: "pequeño" }, "Comentarios"),
+            ...comentarios.map((t) => h("div", { class: "item-texto" }, t)))
+          : null,
         p.acercamiento ? h("div", {}, p.acercamiento) : null));
   }
 
@@ -205,10 +225,11 @@ function vistaPaginaFb() {
       return;
     }
     const personas = res.personas || [];
+    const omitidas = num(res.omitidas_ya_en_base);
     zona.replaceChildren(h("div", { class: "pila" },
-      alerta(`Se leyeron ${num(res.publicaciones)} publicación(es) de ${res.pagina_nombre || "la página"}. ${num(personas.length)} persona(s) dieron me gusta, comentaron o compartieron. Las URLs de perfil están en la pestaña «URLs perfiles».`, "ok"),
+      alerta(`Se leyeron ${num(res.publicaciones)} publicación(es) de ${res.pagina_nombre || "la página"}. ${num(res.nuevas != null ? res.nuevas : personas.length)} persona(s) nuevas. ${num(res.urls_conservadas || res.guardados)} URL(s) conservadas. Se omitieron ${omitidas} fichas que ya estaban. Todas las URLs siguen en «URLs perfiles».`, "ok"),
       personas.length ? h("div", { class: "items" }, personas.map(tarjeta))
-        : vacio("Nadie apareció en likes, comentarios ni shares de esas publicaciones.", "check")));
+        : vacio("No apareció nadie nuevo en comentarios ni reacciones. Las personas de esta pasada ya estaban en la base.", "check")));
     cargar();
   }
 
@@ -233,6 +254,72 @@ function vistaPaginaFb() {
       seguirTarea(tarea, { alTerminar: (res, z) => mostrarResultado(res, z) }));
   }
 
+  async function pintarPaginas() {
+    try {
+      const r = await get("/api/facebook/paginas");
+      const pags = (r && r.paginas) || [];
+      zonaPaginas.replaceChildren(...pags.map((p) => {
+        const chip = h("button", { class: "btn btn-sm", type: "button", title: p.url }, p.nombre || p.url);
+        chip.addEventListener("click", () => { urlPagina.value = p.url; cargar(); });
+        if (!p.fija) {
+          const x = h("button", { class: "btn btn-sm btn-fantasma btn-icono", title: "Quitar" }, icono("x"));
+          x.addEventListener("click", async (ev) => {
+            ev.stopPropagation();
+            await del(`/api/facebook/paginas?url=${encodeURIComponent(p.url)}`);
+            pintarPaginas();
+          });
+          return h("span", { class: "fila", style: { gap: "2px" } }, chip, x);
+        }
+        return chip;
+      }));
+    } catch { /* lista opcional */ }
+  }
+  bAddPagina.addEventListener("click", async () => {
+    const url = urlPagina.value.trim();
+    if (!url) { toast("Pega la URL de la página de seguros.", "error"); return; }
+    const r = await conBoton(bAddPagina, () => post("/api/facebook/paginas", { url }));
+    if (r) { toast("Página añadida."); pintarPaginas(); }
+  });
+
+  async function pintarGen() {
+    try {
+      const r = await get("/api/perfiles/recopilar");
+      const ps = (r && r.perfiles) || [];
+      zonaGen.replaceChildren(ps.length
+        ? h("div", { class: "items" }, ps.map((p) => {
+          const x = h("button", { class: "btn btn-sm btn-fantasma", onclick: async () => {
+            await del(`/api/perfiles/recopilar?url=${encodeURIComponent(p.url)}`);
+            pintarGen();
+          } }, icono("x"), "Quitar");
+          return h("div", { class: "item", style: { gridTemplateColumns: "1fr" } },
+            h("div", { class: "item-cab" },
+              h("strong", {}, p.nombre || p.url), badge(p.red || "perfil"),
+              p.origen ? h("span", { class: "muted pequeño" }, p.origen) : null,
+              h("span", { class: "espaciador" }), x),
+            h("a", { href: p.url, target: "_blank", rel: "noopener noreferrer", class: "pequeño" }, p.url));
+        }))
+        : h("p", { class: "muted pequeño" }, "Aún no hay perfiles generales."));
+    } catch (e) {
+      zonaGen.replaceChildren(errorCaja(e, pintarGen));
+    }
+  }
+  bAddGen.addEventListener("click", async () => {
+    const urls = urlsGen.value.split(/\s+/).map((u) => u.trim()).filter(Boolean);
+    if (!urls.length) { toast("Pega al menos una URL de perfil.", "error"); return; }
+    const r = await conBoton(bAddGen, () => post("/api/perfiles/recopilar", { urls, origen: "manual" }));
+    if (r) {
+      toast(`${num(r.n)} perfil(es) añadido(s).`);
+      urlsGen.value = "";
+      pintarGen();
+    }
+  });
+  bLeerGen.addEventListener("click", async () => {
+    const r = await conBoton(bLeerGen, () => post("/api/perfiles/recopilar/leer", { max_posts: 5 }));
+    if (r && r.tarea) {
+      zonaTareaGen.prepend(seguirTarea(r.tarea, { alTerminar: (res, z) => mostrarLectura(res, z) }));
+    }
+  });
+
   bExtraer.addEventListener("click", async () => {
     const url = urlPagina.value.trim();
     if (!url) { toast("Pega la URL de la página de Facebook.", "error"); urlPagina.focus(); return; }
@@ -247,17 +334,27 @@ function vistaPaginaFb() {
     .filter((t) => t.tipo === "extraccion_facebook_pagina" && t.estado === "en_curso")
     .forEach(lanzar)).catch(() => {});
   cargar();
+  pintarPaginas();
+  pintarGen();
 
   return h("div", { class: "pila" },
     h("div", { class: "card pila" },
-      h("h3", {}, "Página de Facebook"),
-      alerta("Por defecto se lee MAPFRE Colombia. El motor abre las publicaciones y lista quién les dio me gusta, comentó o compartió. Las URLs de esos perfiles quedan en la pestaña «URLs perfiles». Si Facebook pide entrar, Chrome queda abierto: inicia sesión y pulsa «Ya inicié sesión, continuar».", "info"),
+      h("h3", {}, "Páginas de seguros"),
+      alerta("MAPFRE Colombia queda siempre. Puedes añadir otras páginas (Sura, Bolívar, Allianz…) y extraer likes, comentarios y perfiles. Las URLs no se borran entre pasadas. Si Facebook pide entrar, Chrome queda abierto: inicia sesión y pulsa «Ya inicié sesión, continuar».", "info"),
+      h("div", { class: "muted pequeño" }, "Páginas guardadas (clic para extraer):"),
+      zonaPaginas,
       campo("URL de la página", urlPagina),
       h("div", { class: "fila", style: { alignItems: "flex-end" } },
         campo("Publicaciones (1 a 10)", maxPosts),
         campo("Personas a fichar (1 a 50)", maxPersonas),
-        bExtraer),
+        bAddPagina, bExtraer),
       zonaTarea),
+    h("div", { class: "card pila" },
+      h("h3", {}, "Perfiles generales"),
+      alerta("Añade perfiles de Facebook, Instagram, X o LinkedIn para recopilar lo que publican e interactúan. También puedes pasar aquí a quienes ya salieron de MAPFRE desde «URLs perfiles».", "info"),
+      campo("URLs de perfiles", urlsGen),
+      h("div", { class: "fila" }, bAddGen, bLeerGen),
+      zonaTareaGen, zonaGen),
     h("h3", {}, "Quién interactuó"),
     zonaLista);
 }
@@ -265,22 +362,37 @@ function vistaPaginaFb() {
 function vistaUrlsPagina() {
   const zona = h("div", { class: "pila" }, cargando());
   const bCopiar = h("button", { class: "btn btn-sm", disabled: true }, icono("copy"), "Copiar todas las URLs");
+  const bAGen = h("button", { class: "btn btn-sm", disabled: true }, icono("plus"), "Añadir todas a perfiles generales");
   let urls = [];
 
   bCopiar.addEventListener("click", () => copiarTexto(urls.join("\n"), `${urls.length} URL(s) copiada(s).`));
+  bAGen.addEventListener("click", async () => {
+    const r = await conBoton(bAGen, () => post("/api/perfiles/recopilar/desde-pagina", {}));
+    if (r) toast(`${num(r.n)} perfil(es) en la lista general.`);
+  });
 
   function fila(p) {
+    const comentarios = (p.textos || []).filter(Boolean);
     const bUno = h("button", { class: "btn btn-sm btn-fantasma", title: "Copiar URL" }, icono("copy"), "Copiar");
     bUno.addEventListener("click", (ev) => { ev.preventDefault(); copiarTexto(p.perfil, "URL copiada."); });
+    const bUnoGen = h("button", { class: "btn btn-sm btn-fantasma", title: "Añadir a perfiles generales" }, icono("plus"));
+    bUnoGen.addEventListener("click", async (ev) => {
+      ev.preventDefault();
+      const r = await post("/api/perfiles/recopilar", { url: p.perfil, nombre: p.nombre || "", origen: p.pagina_nombre || "pagina" });
+      if (r && r.n) toast("Añadido a perfiles generales.");
+    });
     return h("div", { class: "item", style: { gridTemplateColumns: "1fr" } },
       h("div", { class: "pila-sm" },
         h("div", { class: "item-cab" },
           h("strong", {}, p.nombre || "Sin nombre"),
           ...badgesInteraccion(p),
           p.pagina_nombre ? h("span", { class: "muted pequeño" }, p.pagina_nombre) : null,
-          h("span", { class: "espaciador" }), bUno),
+          h("span", { class: "espaciador" }), bUnoGen, bUno),
         h("a", { href: p.perfil, target: "_blank", rel: "noopener noreferrer", class: "fila", style: { gap: "6px" } },
-          icono("external"), p.perfil || "Sin URL")));
+          icono("external"), p.perfil || "Sin URL"),
+        comentarios.length
+          ? h("div", { class: "pila-sm" }, ...comentarios.map((t) => h("div", { class: "item-texto" }, t)))
+          : null));
   }
 
   async function cargar() {
@@ -289,12 +401,12 @@ function vistaUrlsPagina() {
       const r = await get("/api/facebook/pagina");
       const personas = ((r && r.personas) || []).filter((p) => p.perfil);
       urls = [...new Set(personas.map((p) => p.perfil))];
-      bCopiar.disabled = !urls.length;
+      bCopiar.disabled = bAGen.disabled = !urls.length;
       zona.replaceChildren(personas.length
         ? h("div", { class: "items" }, personas.map(fila))
-        : vacio("Todavía no hay URLs. En «Página Facebook» extrae https://www.facebook.com/Mapfreco; las URLs de quien interactuó aparecen aquí.", "link"));
+        : vacio("Todavía no hay URLs. En «Página Facebook» extrae MAPFRE u otra aseguradora; aquí se conservan todas.", "link"));
     } catch (e) {
-      bCopiar.disabled = true;
+      bCopiar.disabled = bAGen.disabled = true;
       zona.replaceChildren(errorCaja(e, cargar));
     }
   }
@@ -302,8 +414,8 @@ function vistaUrlsPagina() {
   cargar();
   return h("div", { class: "pila" },
     h("h3", {}, "URLs de perfiles"),
-    alerta("Una fila por persona que dio me gusta, comentó o compartió. El enlace abre su perfil de Facebook. Puedes copiar una URL o todas.", "info"),
-    h("div", { class: "barra-acciones" }, bCopiar),
+    alerta("Se conservan todos los perfiles de MAPFRE (y de las otras páginas que extraigas). El comentario va acotado. Puedes copiar las URLs o pasarlas a «Perfiles generales» para leer sus interacciones.", "info"),
+    h("div", { class: "barra-acciones" }, bAGen, bCopiar),
     zona);
 }
 
@@ -549,6 +661,84 @@ function vistaLinkedin() {
     zonaLog, zona);
 }
 
+// ------------------------------------------------------------------ revisión de contenido (publicaciones de todas las redes)
+function etiquetaTipo(tipo) {
+  const t = String(tipo || "publicacion").toLowerCase();
+  if (t === "compartida" || t === "repost") return "Repost";
+  if (t === "respuesta") return "Respuesta";
+  if (t === "comentario") return "Comentario";
+  if (t === "reaccion") return "Reacción";
+  if (t === "logro") return "Logro publicado";
+  return "Publicación";
+}
+
+function vistaContenido() {
+  let redF = "";
+  const persona = selector([{ valor: "", texto: "Todas las personas" }], "");
+  const zona = h("div", { class: "pila" }, cargando());
+  const contador = h("span", { class: "muted" });
+
+  get("/api/perfiles/personas").then((ps) => {
+    const actual = persona.value;
+    persona.replaceChildren(h("option", { value: "" }, "Todas las personas"),
+      ...ps.map((p) => h("option", { value: p.nombre }, p.nombre)));
+    persona.value = actual;
+  }).catch(() => {});
+
+  function tarjeta(p) {
+    const enlace = p.url || p.fuente_url;
+    const estadoB = p.estado === "no_disponible" ? badge("No disponible", "warn")
+      : p.estado === "no_elegible" ? badge("No elegible")
+        : badge(etiquetaTipo(p.tipo), "info");
+    return h("div", { class: "item", style: { gridTemplateColumns: "1fr" } },
+      h("div", { class: "pila-sm" },
+        h("div", { class: "item-cab" },
+          h("strong", {}, p.nombre || "Sin nombre"),
+          estadoB,
+          badge(p.red || "red"),
+          p.tiene_imagenes ? badge(p.n_imagenes > 1 ? `${p.n_imagenes} imágenes` : "Con imagen", "ok") : null,
+          p.tiempo ? h("span", { class: "muted pequeño" }, p.tiempo) : null,
+          h("span", { class: "espaciador" })),
+        p.resumen ? h("div", { class: "muted pequeño" }, p.resumen) : null,
+        h("div", { class: "item-texto" }, p.texto || "Contenido no elegible."),
+        h("div", { class: "fila" },
+          enlace ? h("a", { href: enlace, target: "_blank", rel: "noopener noreferrer", class: "pequeño fila", style: { gap: "4px" } }, icono("external"), p.url && p.url !== p.fuente_url ? "Ver publicación" : "Perfil") : null,
+          h("span", { class: "muted pequeño" }, fecha(p.fecha)))));
+  }
+
+  async function cargar() {
+    zona.replaceChildren(cargando());
+    try {
+      const res = await post("/api/perfiles/contenido", {
+        nombre: persona.value, red: redF, limite: 500,
+      });
+      const items = (res && res.items) || [];
+      contador.textContent = `${num(res && res.total != null ? res.total : items.length)} publicación(es)`;
+      zona.replaceChildren(items.length
+        ? h("div", { class: "items" }, items.map(tarjeta))
+        : vacio("Aún no hay publicaciones. Extrae un perfil desde «Redes»: el mismo scraping llena hechos y contenido.", "check"));
+    } catch (e) {
+      zona.replaceChildren(errorCaja(e, cargar));
+    }
+  }
+  persona.addEventListener("change", cargar);
+  cargar();
+
+  return h("div", { class: "pila" },
+    h("div", { class: "fila", style: { alignItems: "flex-end" } },
+      h("div", { style: { minWidth: "260px" } }, campo("Persona", persona)),
+      segmentado([
+        { valor: "", texto: "Todas las redes" },
+        { valor: "linkedin", texto: "LinkedIn" },
+        { valor: "facebook", texto: "Facebook" },
+        { valor: "instagram", texto: "Instagram" },
+        { valor: "x", texto: "X" },
+      ], redF, (v) => { redF = v; cargar(); })),
+    alerta("Publicaciones y comentarios de quienes se scrapearon. Si hay caption, va acotado; si hay imagen, se indica; y se resume de qué trata. La ficha (estudios, cargos) sigue en «Revisión de hechos».", "info"),
+    h("div", { class: "barra-acciones" }, contador),
+    zona);
+}
+
 // ------------------------------------------------------------------ revisión de hechos
 function vistaHechos(alCambiar, grupo = "ficha") {
   const esRed = grupo === "red";
@@ -627,7 +817,10 @@ function vistaHechos(alCambiar, grupo = "ficha") {
         nombre: persona.value, estado: estadoF, grupo, limite: esRed ? 1000 : 500,
       });
       const catsRed = new Set(["Seguidor", "Sigue a", "Repost", "Gusto"]);
-      const visibles = (filas || []).filter((x) => esRed ? catsRed.has(x.categoria) : !catsRed.has(x.categoria));
+      const catsCont = new Set(["Publicacion", "Comentario", "Reaccion", "Resumen de contenido"]);
+      const visibles = (filas || []).filter((x) => esRed
+        ? catsRed.has(x.categoria)
+        : !catsRed.has(x.categoria) && !catsCont.has(x.categoria));
       total = visibles.length;
       zona.replaceChildren(visibles.length ? h("div", { class: "items" }, visibles.map(item))
         : vacio(estadoF === "pendiente"
@@ -650,7 +843,7 @@ function vistaHechos(alCambiar, grupo = "ficha") {
         estadoF, (v) => { estadoF = v; cargar(); })),
     alerta(esRed
       ? "Aparecen los gustos (finanzas, deporte, moda, nutrición, etc.) según páginas que sigue e interacciones, más seguidores, cuentas seguidas y reposts. Aprueba cada uno para usarlo al acercarte o recomendar."
-      : "Revisa que cada hecho sea explícito y correcto. Un «Producto sugerido» es solo una pista para el asesor; el contacto (correo/celular) sirve para completar la ficha del cliente. Seguidores, páginas que sigue y reposts van en la pestaña de al lado.", "info"),
+      : "Solo información de la ficha: estudios, cargos, logros, familia, ubicación y contacto. Lo que la persona publica está en «Revisión contenido». Un «Producto sugerido» es una pista para el asesor.", "info"),
     h("div", { class: "barra-acciones" }, contador, h("span", { class: "espaciador" }), bTodos, bDescartar, bAprobar),
     zonaLog, zona);
 }

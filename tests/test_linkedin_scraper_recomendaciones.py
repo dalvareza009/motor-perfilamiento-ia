@@ -242,6 +242,30 @@ def test_facebook_solo_guarda_datos_personales():
     assert urls_likes_y_seguidos("https://www.facebook.com/ana")[1].endswith("/following")
 
 
+def test_facebook_familia_etiquetada_esposa_hijos_y_tio():
+    from facebook_activity_scraper import pares_familia_facebook, parsear_ficha_facebook
+    cuerpo = """
+    Familia y relaciones
+    Casada
+    María Gómez
+    Esposa
+    Pedro Álvarez
+    Hijo
+    Carlos Pérez
+    Tío
+    https://www.instagram.com/maria.g/
+    """
+    pares = pares_familia_facebook(cuerpo)
+    assert any("Esposa" in p and "María Gómez" in p for p in pares)
+    assert any("Hijo" in p and "Pedro" in p for p in pares)
+    assert any("Tío" in p or "Tio" in p for p in pares)
+    info = parsear_ficha_facebook(cuerpo)
+    assert "María Gómez" in info["familia"]
+    assert "Pedro" in info["familia"]
+    assert "Carlos" in info["familia"]
+    assert any("instagram.com" in (x.get("url") or "") for x in (info.get("otras_redes") or []))
+
+
 def test_facebook_compartida_pesa_igual_que_propia_y_ficha_manda():
     # En Facebook compartir es publicar: mismo peso que la propia. Solo la
     # ficha del perfil sigue por encima.

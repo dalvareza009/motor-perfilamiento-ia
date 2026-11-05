@@ -33,7 +33,8 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
-from linkedin_activity_scraper import LinkedInActivityScraper, extraer_red_de, parse_fecha_publicacion
+from linkedin_activity_scraper import (LinkedInActivityScraper, expandir_ver_mas, extraer_red_de,
+                                       parse_fecha_publicacion)
 from app.redes_seguidas import elegir_publicaciones, tope_publicaciones
 
 MARCAS_MURO_IG = ("/accounts/login", "/challenge", "/accounts/suspended")
@@ -110,6 +111,7 @@ def es_logro(texto):
 
 def caption_de_publicacion(titulo, articulo):
     """El texto de la persona: caption o, si no hay, la descripción de la foto. Sin comentarios."""
+    from app.contenido import _es_linea_pie
     from app.perfil_redes import quitar_fechas_iso
 
     def limpia(linea):
@@ -128,46 +130,27 @@ def caption_de_publicacion(titulo, articulo):
             continue
         if bajo in RUIDO_POST or re.match(r"^[\d.,]+\s*(me gusta|likes|comentarios|comments)", bajo):
             continue
+        if _es_linea_pie(t):
+            continue
         lineas.append(t)
     return "\n".join(lineas)
 
 
 def incorporar_datos_importantes(info, posts):
-    """Del caption o del repost: familia, edad, trabajo, estudios, ciudad y logros propios.
-
-    Los comentarios no llegan aquí: el texto del post ya viene sin ellos.
-    """
+    """De un caption propio: familia, edad y ciudad. Estudios, cargos y logros van a contenido."""
     from app import linkedin_texto
-    from app.perfil_redes import _n, categorias_oracion, quitar_fechas_iso
+    from app.perfil_redes import aplicar_lo_publicado
 
     info = dict(info or {})
-    logros = [info.get("logros") or ""]
+    propios = []
     for post in posts or []:
         texto = post.get("texto") or ""
         if not texto or linkedin_texto.evaluar_publicacion(texto)["omitida"]:
             continue
-        for oracion in re.split(r"(?<=[.!?])\s+|\n", texto):
-            frase = quitar_fechas_iso(re.sub(r"\s+", " ", oracion).strip(" ."))
-            if not frase or (es_repost(frase) and len(frase) < 40):
-                continue
-            if post.get("tipo") != "compartida" and es_logro(frase) and _n(frase) not in _n(" ".join(logros)):
-                logros.append(frase)
-            for cat in categorias_oracion(frase):
-                campo = {"Familia": "familia", "Edad": "edad", "Trabajo": "experiencia",
-                         "Estudios": "educacion", "Ubicacion": "ubicacion"}.get(cat)
-                if not campo:
-                    continue
-                actual = info.get(campo) or ""
-                if _n(frase) and _n(frase) not in _n(actual):
-                    info[campo] = ". ".join(p for p in (actual, frase) if p)
-    info["logros"] = ". ".join(p for p in logros if p)
-    if not info.get("titular") and info.get("experiencia"):
-        info["titular"] = info["experiencia"].split(". ")[0][:300]
-    from app.perfil_redes import aplicar_lo_publicado
-    propios = [p for p in (posts or [])
-               if not linkedin_texto.evaluar_publicacion(p.get("texto") or "")["omitida"]]
-    info = aplicar_lo_publicado(info, propios)
-    return info
+        if (post.get("tipo") or "publicacion") == "compartida" or es_repost(texto):
+            continue
+        propios.append(post)
+    return aplicar_lo_publicado(info, propios)
 
 
 def url_de_publicacion(href):
@@ -182,11 +165,11 @@ def parsear_ficha_instagram(cuerpo, nombre_conocido=""):
 
     Instagram mezcla la ficha con botones; aquí se deja solo lo que describe a la persona.
     """
-    from app.perfil_redes import aplicar_lo_publicado, quitar_fechas_iso
+    from app.perfil_redes import anexar_otras_redes, aplicar_lo_publicado, quitar_fechas_iso
 
     info = {"nombre": (nombre_conocido or "").strip(), "titular": "", "ubicacion": "",
             "acerca": "", "experiencia": "", "educacion": "", "estado_civil": "",
-            "seguidores": "", "privado": False, "no_disponible": False}
+            "familia": "", "seguidores": "", "privado": False, "no_disponible": False}
     texto = str(cuerpo or "")
     info["privado"] = es_cuenta_privada(texto)
     info["no_disponible"] = es_no_disponible(texto)
@@ -201,11 +184,15 @@ def parsear_ficha_instagram(cuerpo, nombre_conocido=""):
         bajo = t.lower().strip(" .•·")
         if not t or bajo in RUIDO_FICHA or re.fullmatch(r"[\d.,]+\s*(?:mil|mill\.?)?", bajo):
             continue
-        if t.lower().startswith("http") or "instagram.com" in bajo:
+        if t.lower().startswith("http") or "instagram.com" in bajo or "facebook.com" in bajo or "x.com/" in bajo or "linkedin.com" in bajo:
+            info = anexar_otras_redes(info, t, "instagram")
             continue
         if re.search(r"\bcasad[oa]\b|\bespos[oa]\b|\bmam[áa]\b|\bpap[áa]\b|\bhij[oa]s?\b", bajo):
             civil.append(t)
-        elif re.search(r"\b(aut[oó]nom[oa]|independiente|trabaja en|empleado|docente|profesor)\b", bajo):
+        elif re.search(
+                r"\b(aut[oó]nom[oa]|independiente|emprendedor[ae]?|trabaja en|"
+                r"empleado|docente|profesor|ingenier[oa]|abogad[oa]|analista|"
+                r"gerente|profesional)\b", bajo):
             trabajo.append(t)
             if re.search(r"\b(universidad|colegio|liceo)\b", bajo):
                 estudios.append(t)
@@ -226,6 +213,7 @@ def parsear_ficha_instagram(cuerpo, nombre_conocido=""):
         info["educacion"] = "Estudios declarados en el perfil: " + ". ".join(estudios)
     if civil:
         info["estado_civil"] = "Estado civil declarado en el perfil: " + ". ".join(civil)
+        info["familia"] = "Familia declarada en el perfil: " + ". ".join(civil)
     if not info["titular"] and resto:
         info["titular"] = resto[0][:300]
     utiles = [p for p in resto if p not in (info["titular"],)][:8]
@@ -235,11 +223,13 @@ def parsear_ficha_instagram(cuerpo, nombre_conocido=""):
         info["bio"] = info["titular"]
     info["acerca"] = "\n".join(filter(None, [
         info["titular"], info["ubicacion"], info["experiencia"],
-        info["educacion"], info["estado_civil"], *utiles]))
+        info["educacion"], info["estado_civil"], info.get("familia"), *utiles]))
     for clave, valor in list(info.items()):
         if isinstance(valor, str) and valor:
             info[clave] = quitar_fechas_iso(valor)
-    return aplicar_lo_publicado(info, [{"tipo": "publicacion", "texto": info.get("acerca") or ""}])
+    info = anexar_otras_redes(info, texto, "instagram")
+    return aplicar_lo_publicado(info, [{"tipo": "publicacion", "texto": info.get("acerca") or ""}],
+                               origen="ficha")
 
 
 class InstagramActivityScraper:
@@ -520,15 +510,7 @@ class InstagramActivityScraper:
         self.driver.get(url_post)
         time.sleep(3)
         self._cerrar_avisos()
-        try:
-            self.driver.execute_script("""
-                for (const b of document.querySelectorAll('button, [role="button"]')) {
-                    const t = (b.innerText || '').trim().toLowerCase();
-                    if (t === 'más' || t === 'more' || t === '... más' || t === 'ver más') b.click();
-                }
-            """)
-        except Exception:
-            pass
+        expandir_ver_mas(self.driver)
         try:
             propio = (self.info.get("handle") or "").lower()
             datos = self.driver.execute_script("""
@@ -538,7 +520,9 @@ class InstagramActivityScraper:
                 const article = document.querySelector('article') || document.body;
                 const sinComentarios = article.cloneNode(true);
                 sinComentarios.querySelectorAll('ul').forEach(n => n.remove());
-                const alts = [...article.querySelectorAll('img')].map(img => img.alt || '').filter(Boolean);
+                const imgs = [...article.querySelectorAll('img')].filter(img =>
+                    (img.naturalWidth || img.width || 0) > 80);
+                const alts = imgs.map(img => img.alt || '').filter(Boolean);
                 const etiquetas = [...article.querySelectorAll('[aria-label]')]
                     .map(n => n.getAttribute('aria-label') || '').join(' ');
                 const handles = [...article.querySelectorAll('a[href^="/"]')].map(a =>
@@ -551,6 +535,7 @@ class InstagramActivityScraper:
                     titulo: h1 ? (h1.innerText || '') : '',
                     articulo: sinComentarios.innerText || '',
                     alts: alts,
+                    n_imagenes: imgs.length,
                     origen: origen,
                     repost: /reposte[oó]|reposted|\\brepost\\b/i.test((article.innerText || '') + ' ' + etiquetas)
                 };
@@ -561,8 +546,10 @@ class InstagramActivityScraper:
         if len(base) < 25:
             descripciones = [alt_util(a) for a in (datos.get("alts") or [])]
             base = "\n".join(filter(None, [base, *descripciones]))
-        texto = self.analisis._limpiar_texto(base, limite=2000)
-        if len(texto) < 25:
+        from app.contenido import texto_mostrable
+        texto, estado = texto_mostrable(self.analisis._limpiar_texto(base, limite=2000) or base)
+        n_img = int(datos.get("n_imagenes") or 0) or len(datos.get("alts") or [])
+        if estado == "omitir" or (estado == "ok" and len(texto) < 25 and not n_img):
             return None
         tiempo = tiempo_legible(datos.get("etiqueta") or "", datos.get("datetime") or "")
         repost = es_repost_grid or bool(datos.get("repost")) or es_repost(texto[:240])
@@ -573,9 +560,12 @@ class InstagramActivityScraper:
             "perfil": profile_url, "urn": "N/A", "url_publicacion": url_post,
             "tipo": "compartida" if repost else "publicacion",
             "autor": autor,
-            "texto": texto, "tiempo": tiempo,
+            "texto": texto or ("Publicó una imagen." if n_img else texto), "tiempo": tiempo,
             "hashtags": ";".join(self.analisis.extraer_hashtags(texto)),
             "enlaces": "", "reacciones": "", "comentarios": "",
+            "alts": [a for a in (datos.get("alts") or []) if a],
+            "n_imagenes": n_img,
+            "tiene_imagenes": bool(n_img),
             "fecha_extraccion": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
 

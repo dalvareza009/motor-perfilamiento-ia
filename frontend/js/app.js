@@ -10,7 +10,7 @@ const VISTAS = [
   { id: "clientes", texto: "Clientes", icono: "users", permiso: "listar", cargar: () => import("./vistas/clientes.js") },
   { id: "borradores", texto: "Borradores", icono: "mail", permiso: "ver_mensajes", cargar: () => import("./vistas/borradores.js") },
   { id: "conocimiento", texto: "Conocimiento", icono: "book", permiso: "admin_conocimiento", cargar: () => import("./vistas/conocimiento.js") },
-  { id: "perfiles", texto: "Perfiles públicos", icono: "idcard", permiso: "admin_perfiles", cargar: () => import("./vistas/perfiles.js?v=20261104urls") },
+  { id: "perfiles", texto: "Perfiles públicos", icono: "idcard", permiso: "admin_perfiles", cargar: () => import("./vistas/perfiles.js?v=20261105fam") },
   { id: "mensajes-prueba", texto: "Mensajes de prueba", icono: "whatsapp", permiso: "admin_perfiles", cargar: () => import("./vistas/mensajes_prueba.js") },
   { id: "duplicados", texto: "Duplicados", icono: "merge", permiso: "admin_clientes", cargar: () => import("./vistas/duplicados.js") },
   { id: "auditoria", texto: "Auditoría", icono: "shield", permiso: "ver_auditoria", cargar: () => import("./vistas/auditoria.js") },

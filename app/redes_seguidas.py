@@ -485,6 +485,15 @@ def extraer_red_social(driver, red, profile_url, info, posts=None):
     red = (red or "").lower()
     base = (profile_url or "").rstrip("/")
     print(f"  Leyendo seguidores e intereses en {red}…")
+    try:
+        from app.perfil_redes import anexar_otras_redes
+        hrefs = driver.execute_script(
+            "return [...document.querySelectorAll('a[href]')].slice(0,160).map(a => a.href);") or []
+        info = anexar_otras_redes(
+            info, "\n".join([*(hrefs or []), info.get("bio") or "", info.get("acerca") or ""]),
+            red, profile_url)
+    except Exception:
+        pass
 
     if isinstance(info.get("seguidores"), str):
         info["n_seguidores"] = info.get("n_seguidores") or info["seguidores"]
