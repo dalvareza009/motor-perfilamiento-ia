@@ -32,7 +32,7 @@ def _campo(texto):
     return _deduplicar(t)
 
 
-def hechos_desde_info(info):
+def hechos_desde_info(info, posts=None):
     """Ficha del scraper -> mismos fragmentos que la ingesta de perfiles."""
     info = info or {}
     hechos = []
@@ -78,7 +78,7 @@ def hechos_desde_info(info):
         cuenta[hecho["categoria"]] = n
         titulo = hecho["categoria"] if n == 1 else f"{hecho['categoria']} ({n})"
         salida.append({**hecho, "titulo": titulo})
-    salida.extend(redes_seguidas.hechos_de_red(info))
+    salida.extend(redes_seguidas.hechos_de_red(info, posts=posts))
     return salida
 
 
@@ -96,7 +96,7 @@ def persistir(persona, red, url, info, posts=None):
     asegurar_hechos()
     asegurar_actividad()
     quien = _persona(persona, info, url)
-    hechos = hechos_desde_info(info)
+    hechos = hechos_desde_info(info, posts)
     sugeridos = perfil_redes.sugerir_productos(hechos) if hechos else []
     fragmentos = hechos + sugeridos
     n = a = s = 0

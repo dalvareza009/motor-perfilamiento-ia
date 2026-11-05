@@ -821,6 +821,11 @@ def sugerir_productos(hechos):
             candidatos += ["Seguro de vida", "Seguro de accidentes personales"]
         if JUBILACION.search(n):
             candidatos += ["Seguro de pensión", "Seguro renta vitalicia"]
+        if h["categoria"] == "Gusto":
+            from app.gustos import producto_de_gusto
+            producto = producto_de_gusto(h.get("titulo") or "")
+            if producto:
+                candidatos.append(producto)
         if h["categoria"] in ("Paginas seguidas", "Interacciones", "Interes", "Sigue a",
                               "Repost", "Seguidor"):
             n_red = _n((h.get("titulo") or "") + " " + h["contenido"])

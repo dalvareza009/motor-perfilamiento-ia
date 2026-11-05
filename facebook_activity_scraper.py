@@ -29,6 +29,7 @@ from app import runtime_nube
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 
 from linkedin_activity_scraper import LinkedInActivityScraper, extraer_red_de, parse_fecha_publicacion
 from app.redes_seguidas import tope_publicaciones
@@ -562,6 +563,299 @@ class FacebookActivityScraper:
         print(f"  ✔ {len(vigentes)} dentro del último año "
               f"({self.analisis.ultimas_descartadas} antiguas descartadas)")
         return vigentes[:max_posts]
+
+    # ---------- página: likes, comentarios y contacto ----------
+    def extraer_ficha_corta(self, profile_url):
+        """Nombre, trabajo, ciudad y contacto público, sin listas de seguidos."""
+        from app.facebook_pagina import formatear_contacto
+        from app.perfil_redes import contactos_de_texto
+
+        cuerpos = []
+        for url in urls_about(profile_url)[:4]:
+            try:
+                self.driver.get(url)
+                time.sleep(2.2)
+                cuerpos.append(self.driver.find_element(By.TAG_NAME, "body").text or "")
+            except Exception:
+                continue
+        cuerpo = "\n".join(cuerpos)
+        info = {"nombre": "", "titular": "", "ubicacion": "", "acerca": "",
+                "experiencia": "", "educacion": "", "contacto": "", "contactos": []}
+        bajo = cuerpo.lower()
+        if any(m in bajo for m in NO_DISPONIBLE) and not cuerpos:
+            info["acerca"] = "contenido no disponible para esta sesión"
+            return info
+        try:
+            texto_h1 = self.driver.find_element(By.TAG_NAME, "h1").text.strip()
+            if texto_h1:
+                info["nombre"] = texto_h1.splitlines()[0][:120]
+        except Exception:
+            pass
+        parsed = parsear_ficha_facebook(cuerpo)
+        for clave in ("nombre", "titular", "ubicacion", "acerca", "experiencia", "educacion", "edad"):
+            if parsed.get(clave) and not info.get(clave):
+                info[clave] = parsed[clave]
+        info["contactos"] = contactos_de_texto(cuerpo)
+        info["contacto"] = formatear_contacto(info, profile_url)
+        return info
+
+    def _nombre_pagina(self):
+        try:
+            h1 = self.driver.find_element(By.TAG_NAME, "h1").text.strip()
+            if h1:
+                return h1.splitlines()[0][:120]
+        except Exception:
+            pass
+        titulo = (self.driver.title or "").split("|")[0].strip()
+        if titulo and titulo.lower() != "facebook":
+            return titulo[:120]
+        return ""
+
+    def _urls_publicaciones_pagina(self, max_posts):
+        vistos, orden = set(), []
+        for _ronda in range(8):
+            halladas = self.driver.execute_script("""
+                const arts = [...document.querySelectorAll("[role='article'], [aria-posinset]")];
+                return arts.map(art => {
+                  const a = art.querySelector(
+                    'a[href*="/posts/"], a[href*="permalink.php"], a[href*="story_fbid"], a[href*="/photos/"]');
+                  const lineas = (art.innerText || '').split('\\n')
+                    .map(l => l.trim()).filter(l => l.length > 18);
+                  return {url: a ? a.href : '', texto: lineas.slice(0, 5).join(' ').slice(0, 400)};
+                });
+            """) or []
+            for item in halladas:
+                url = (item.get("url") or "").split("?")[0].strip()
+                if not url or url in vistos:
+                    continue
+                vistos.add(url)
+                orden.append({"url": url, "texto": item.get("texto") or ""})
+            if len(orden) >= max_posts:
+                break
+            self.driver.execute_script("window.scrollBy(0, 1400);")
+            time.sleep(2.2)
+        return orden[:max_posts]
+
+    def _expandir_comentarios(self):
+        for _ in range(8):
+            clic = self.driver.execute_script("""
+                const claves = ['ver más comentarios', 'ver mas comentarios', 'view more comments',
+                                'comentarios anteriores', 'previous comments',
+                                'ver todos los comentarios', 'view all comments'];
+                const els = [...document.querySelectorAll('div[role="button"], span, a')];
+                for (const el of els) {
+                  const t = (el.innerText || '').trim().toLowerCase();
+                  if (!t || t.length > 60) continue;
+                  if (claves.some(c => t === c || t.startsWith(c))) { el.click(); return t; }
+                }
+                return '';
+            """)
+            if not clic:
+                break
+            time.sleep(1.3)
+
+    def _entradas_visibles(self, pagina_url, solo=""):
+        raw = self.driver.execute_script("""
+            const out = [];
+            const nodos = [...document.querySelectorAll('[aria-label]')];
+            for (const n of nodos) {
+              const lab = n.getAttribute('aria-label') || '';
+              const m = lab.match(/^(?:Comentario de|Comment by)\\s+(.+)$/i);
+              if (!m) continue;
+              const a = n.querySelector('a[href]');
+              let texto = '';
+              for (const d of n.querySelectorAll('[dir="auto"]')) {
+                const t = (d.innerText || '').trim();
+                if (t && t !== m[1] && t.length > 1 && t.length < 500
+                    && !/^(me gusta|like|responder|reply|hace \\d)/i.test(t)) {
+                  texto = t; break;
+                }
+              }
+              out.push({href: a ? a.href : '', nombre: m[1], tipo: 'comentario', texto});
+            }
+            const dialogo = document.querySelector('[role="dialog"]');
+            if (dialogo) {
+              for (const a of dialogo.querySelectorAll('a[href]')) {
+                const nombre = (a.innerText || a.getAttribute('aria-label') || '')
+                  .trim().split('\\n')[0];
+                if (nombre && a.href) out.push({href: a.href, nombre, tipo: 'like', texto: ''});
+              }
+            }
+            return out;
+        """) or []
+        entradas = []
+        for item in raw:
+            tipo = item.get("tipo") or "comentario"
+            if solo and tipo != solo:
+                continue
+            entradas.append({
+                "href": item.get("href"),
+                "nombre": item.get("nombre"),
+                "tipo": tipo,
+                "texto": item.get("texto") or "",
+                "pagina": pagina_url,
+            })
+        return entradas
+
+    def _cerrar_dialogo(self):
+        try:
+            self.driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+            time.sleep(0.4)
+        except Exception:
+            pass
+
+    def _entradas_dialogo(self, pagina_url, tipo):
+        raw = self.driver.execute_script("""
+            const tipo = arguments[0];
+            const d = document.querySelector('[role="dialog"]');
+            if (!d) return [];
+            const out = [];
+            for (const a of d.querySelectorAll('a[href]')) {
+              const nombre = (a.innerText || a.getAttribute('aria-label') || '')
+                .trim().split('\\n')[0];
+              if (nombre && a.href) out.push({href: a.href, nombre, tipo, texto: ''});
+            }
+            return out;
+        """, tipo) or []
+        return [{
+            "href": item.get("href"),
+            "nombre": item.get("nombre"),
+            "tipo": tipo,
+            "texto": "",
+            "pagina": pagina_url,
+        } for item in raw]
+
+    def _dialogo_de_post(self, pagina_url, tipo):
+        """Abre el listado de me gusta o de shares y saca los perfiles."""
+        if tipo == "compartido":
+            primero = r"quién compartió|quien compartio|see who shared|ver quiénes compartieron|ver quienes compartieron"
+            segundo = r"compartidos|shares|veces compart|shared this"
+        else:
+            primero = r"ver quién reaccionó|ver quien reacciono|see who reacted|todas las reacciones|all reactions"
+            segundo = r"me gusta|like|reaccion"
+            tipo = "like"
+        try:
+            clic = self.driver.execute_script("""
+                const primero = new RegExp(arguments[0], 'i');
+                const segundo = new RegExp(arguments[1], 'i');
+                const labs = [...document.querySelectorAll('[aria-label], [role="button"]')];
+                for (const el of labs) {
+                  const t = (el.getAttribute('aria-label') || el.innerText || '');
+                  if (primero.test(t) && t.length < 90) { el.click(); return t; }
+                }
+                for (const el of labs) {
+                  const t = (el.getAttribute('aria-label') || '');
+                  if (t.length < 90 && /\\d/.test(t) && segundo.test(t)) { el.click(); return t; }
+                }
+                return '';
+            """, primero, segundo)
+            if not clic:
+                return []
+            time.sleep(2)
+            for _ in range(5):
+                self.driver.execute_script("""
+                    const d = document.querySelector('[role="dialog"]');
+                    if (!d) return;
+                    const sc = [...d.querySelectorAll('*')].find(n => n.scrollHeight > n.clientHeight + 40) || d;
+                    sc.scrollTop = sc.scrollHeight;
+                """)
+                time.sleep(0.8)
+            entradas = self._entradas_dialogo(pagina_url, tipo)
+            self._cerrar_dialogo()
+            return entradas
+        except Exception as e:
+            print(f"  ⚠ No se leyó el listado ({tipo}): {e}")
+            self._cerrar_dialogo()
+            return []
+
+    def extraer_interactuantes_pagina(self, page_url, max_posts=5, max_personas=30, tarea=None):
+        """Likes y comentarios de las publicaciones de una página, con ficha de contacto."""
+        from app.facebook_pagina import (TOPE_PERSONAS, acercamiento, clasificar_url_pagina,
+                                         formatear_contacto, fusionar, persistir,
+                                         url_perfil_facebook)
+
+        page_url = clasificar_url_pagina(page_url)
+        if not page_url:
+            return {"ok": False, "motivo": "Indica la URL de una página de Facebook."}
+        max_posts = max(1, min(int(max_posts or 5), 10))
+        max_personas = max(1, min(int(max_personas or 30), TOPE_PERSONAS))
+        print(f"\n📄 Página de Facebook: {page_url}")
+        self.driver.get(page_url)
+        time.sleep(4)
+        nombre_pagina = self._nombre_pagina() or page_url.rsplit("/", 1)[-1]
+        print(f"  {nombre_pagina}")
+        posts = self._urls_publicaciones_pagina(max_posts)
+        if not posts:
+            print("  ⚠ No se vieron publicaciones. ¿La sesión puede ver la página?")
+        personas, vistos_evento = [], set()
+        if tarea:
+            tarea.avance(0, max(len(posts), 1) + max_personas)
+
+        def mezclar(extra, publicacion=""):
+            pub = publicacion or ""
+            for item in extra:
+                perfil = url_perfil_facebook(item.get("href") or item.get("perfil") or "", page_url)
+                clave = (perfil, item.get("tipo"), pub[:80], (item.get("texto") or "")[:80])
+                if not perfil or clave in vistos_evento:
+                    continue
+                vistos_evento.add(clave)
+                fusionar(personas, {
+                    **item,
+                    "pagina": page_url,
+                    "publicacion": pub,
+                })
+
+        for i, post in enumerate(posts, 1):
+            if tarea and getattr(tarea, "cancelada", False):
+                print("Detenida.")
+                break
+            print(f"  Publicación {i}/{len(posts)}: {(post.get('texto') or '')[:70]}")
+            try:
+                self.driver.get(post["url"])
+                time.sleep(3)
+            except Exception as e:
+                print(f"  ⚠ No se abrió la publicación: {e}")
+                continue
+            self._expandir_comentarios()
+            mezclar(self._entradas_visibles(page_url, solo="comentario"), post.get("texto") or "")
+            mezclar(self._dialogo_de_post(page_url, "like"), post.get("texto") or "")
+            mezclar(self._dialogo_de_post(page_url, "compartido"), post.get("texto") or "")
+            if tarea:
+                tarea.avance(i, len(posts) + max_personas)
+
+        personas.sort(key=lambda p: (p["comentarios"], p.get("compartidos") or 0, p["likes"]), reverse=True)
+        print(f"  {len(personas)} persona(s) distintas. Ficha de las primeras {min(len(personas), max_personas)}.")
+        for i, p in enumerate(personas):
+            if tarea and getattr(tarea, "cancelada", False):
+                break
+            if i < max_personas:
+                print(f"  Ficha {i + 1}/{min(len(personas), max_personas)}: {p.get('nombre') or p['perfil']}")
+                try:
+                    info = self.extraer_ficha_corta(p["perfil"])
+                except Exception as e:
+                    print(f"  ⚠ No se leyó la ficha: {e}")
+                    info = {}
+                if info.get("nombre"):
+                    p["nombre"] = info["nombre"]
+                p["ficha"] = info.get("acerca") or info.get("titular") or p.get("ficha") or ""
+                p["ubicacion"] = info.get("ubicacion") or ""
+                p["contacto"] = info.get("contacto") or formatear_contacto(info, p["perfil"])
+                if tarea:
+                    tarea.avance(len(posts) + i + 1, len(posts) + max_personas)
+            if not p.get("contacto"):
+                p["contacto"] = formatear_contacto({}, p["perfil"])
+            p["acercamiento"] = acercamiento(p, nombre_pagina)
+
+        n = persistir(page_url, nombre_pagina, personas)
+        print(f"  Guardadas {n} persona(s) que interactuaron con {nombre_pagina}.")
+        return {
+            "ok": True,
+            "pagina": page_url,
+            "pagina_nombre": nombre_pagina,
+            "publicaciones": len(posts),
+            "personas": personas,
+            "guardados": n,
+        }
 
     # ---------- ejecución ----------
     def ejecutar(self, profile_url, max_posts=10):
