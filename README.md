@@ -92,4 +92,3 @@ Ver `.env.example`. Resumen:
 | `FIRECRAWL_API_KEY`, `SITIO_DOMINIO` | Ingesta del sitio de producto |
 | `SCRAPE_HEADLESS`, `SCRAPE_MANUAL_LOGIN` | En contenedor: headless y sin login manual |
 
-El archivo `.env` no se sube al repositorio.
