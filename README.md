@@ -1,57 +1,64 @@
 # Motor de perfilamiento IA
 
-Herramienta interna de Global Seguros: segmentación de clientes, borradores de WhatsApp y correo, conocimiento de producto y lectura de **perfiles públicos autorizados** (LinkedIn, X, Facebook, Instagram, Substack y Reddit).
+Herramienta interna de **Global Seguros** para segmentar clientes, preparar borradores de WhatsApp y correo, gestionar el conocimiento de producto y leer **perfiles públicos autorizados**.
 
-Las cifras salen de SQL. El modelo solo interpreta preguntas y redacta textos; no inventa coberturas ni datos personales. Cada consulta queda en auditoría.
+Las cifras salen de SQL. El modelo interpreta preguntas y redacta textos; no inventa coberturas ni datos personales. Cada consulta queda en auditoría. Los hechos de redes pasan por revisión humana antes de usarse.
 
-- Código: https://github.com/dalvareza009/motor-perfilamiento-ia
-- App en Vercel: https://motor-perfilamiento-ia.vercel.app
+| | |
+| --- | --- |
+| Código | https://github.com/dalvareza009/motor-perfilamiento-ia |
+| App (Vercel) | https://motor-perfilamiento-ia.vercel.app |
+| Rama de trabajo actual | `cursor/facebook-pagina-interactuantes-y-gustos` |
 
-## Qué incluye
+## Qué hace
 
 - **Panel y segmentos:** conteos, k-anonimato para el rol analista, plantillas por grupo.
 - **Clientes:** ficha, hechos de perfil, perfil IA, borradores por canal.
-- **Asistente:** pregunta en lenguaje natural → intención (LLM) → SQL o generación de mensajes (código).
-- **Borradores:** validación automática, estados (borrador → revisión → aprobado → enviado).
-- **Conocimiento:** ingesta del sitio (Firecrawl), aprobación humana, búsqueda vectorial si hay embeddings.
-- **Perfiles públicos:** lista de personas que autorizaron por escrito; scraping con la sesión de Chrome de quien opera (incluye Substack y Reddit).
+- **Asistente:** pregunta en lenguaje natural → intención (LLM) → SQL o generación de mensajes.
+- **Borradores:** validación automática y estados (borrador → revisión → aprobado → enviado).
+- **Conocimiento:** ingesta del sitio con Firecrawl, aprobación humana, búsqueda vectorial si hay embeddings.
+- **Perfiles públicos:** LinkedIn, Facebook, Instagram, X, **Substack** y **Reddit**, con sesión de Chrome de quien opera.
 - **Duplicados y auditoría.**
-- **Cumplimiento:** documentación de Selenium y Firecrawl (privacidad, retención, créditos) en `docs/cumplimiento/`.
 
 ### Roles
 
 | Rol | Alcance |
 | --- | --- |
-| Analista | Cifras agregadas, resúmenes y plantillas. Los grupos con menos de 5 personas se ocultan. |
-| Asesor | Lo anterior más fichas, borradores individuales y en lote. |
+| Analista | Cifras agregadas, resúmenes y plantillas. Grupos con menos de 5 personas se ocultan. |
+| Asesor | Lo anterior más fichas y borradores individuales o en lote. |
 | Administrador | Lo anterior más conocimiento, perfiles, duplicados, ingesta y auditoría. |
 
-## Cómo está armado
+## Estructura del repositorio
 
 ```
-frontend/     Interfaz (HTML/JS)
-app/          API FastAPI y reglas de negocio
-*_scraper.py  LinkedIn, X, Facebook, Instagram, Substack, Reddit (Selenium + Chrome)
-docs/         Cumplimiento, arquitectura y diagramas
-data/         Perfiles autorizados
-tests/        Pruebas
-scripts/      Arranque local y carga de base
+app/                 API FastAPI y reglas de negocio
+frontend/            Interfaz (HTML/JS/CSS)
+*_scraper.py         Extractores por red (Selenium + Chrome)
+docs/
+  cumplimiento/      Privacidad y proveedores de extracción
+  arquitectura/      Diagramas
+data/                Perfiles autorizados (no versionar datos reales sensibles)
+tests/               Pruebas
+scripts/             Arranque local, despliegue y utilidades
 ```
 
-- **Datos:** PostgreSQL (`DATABASE_URL` o `DB_HOST` / `DB_NAME` locales). En Vercel se usa Neon.
-- **Modelo:** Ollama en local (`qwen3:4b-instruct`) o API compatible (`LLM_BASE_URL`, en Vercel AI Gateway).
-- **Scraping:** Google Chrome en el PC. En Vercel no hay login manual; sin cookies vigentes las redes bloquean el datacenter.
+Los nombres de carpetas y archivos describen el contenido (`cumplimiento`, `arquitectura`), no el texto de un pedido puntual.
 
-Para instalarlo en **otro computador**: descomprime `motor_perfilamiento_ia_equipo.zip` y sigue la guía **[INSTALAR.md](INSTALAR.md)** (o ejecuta `INSTALAR.bat`). Las claves (`DB_PASSWORD`, Firecrawl, opcionalmente Neon/LLM) se pasan aparte, no van en el zip.
+## Requisitos
 
-## Arranque 100 % local
+- Python 3.12+
+- Google Chrome
+- PostgreSQL 18 (local) o Neon (`DATABASE_URL`)
+- Ollama en local (`qwen3:4b-instruct`, `nomic-embed-text`) **o** API compatible (`LLM_*` / AI Gateway en Vercel)
 
-Instalar Python 3.12+, Google Chrome, PostgreSQL 18 y Ollama (`qwen3:4b-instruct`, `nomic-embed-text`).
+## Instalación y arranque local
+
+Para otro computador: descomprime el paquete de equipo y sigue **[INSTALAR.md](INSTALAR.md)** (o `INSTALAR.bat`). Las claves no van en el zip.
 
 ```powershell
 copy .env.example .env
 # En .env: comenta DATABASE_URL y LLM_*; descomenta DB_* y OLLAMA_*
-# Ajusta DB_PASSWORD a la de tu Postgres
+# Ajusta DB_PASSWORD
 
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
@@ -59,45 +66,66 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m app.api
 ```
 
-O: `scripts\preparar-equipo.ps1` y luego `scripts\iniciar.ps1`.
+También: `scripts\preparar-equipo.ps1` y luego `scripts\iniciar.ps1`.
 
 Abrir http://127.0.0.1:8000 — usuario a elección, clave vacía si no hay `DEMO_CLAVE`, rol Administrador.
 
-## Scraping
+Guía adicional: [README-ejecucion-local.md](README-ejecucion-local.md).
+
+## Extracción de perfiles
 
 Solo perfiles en `data/perfiles_autorizados.json` con autorización marcada.
 
 1. Rol administrador → **Perfiles públicos**.
-2. Pegar la URL (LinkedIn, X, Facebook, Instagram, Substack o Reddit).
+2. Pegar la URL (LinkedIn, Facebook, Instagram, X, Substack o Reddit).
 3. Extraer. Chrome se abre: iniciar sesión en esa red y confirmar en la web.
 4. Los hechos quedan pendientes de revisión; los aprobados se usan en borradores.
 
-En todas las redes se revisa, si está dicho o se ve: a quién sigue, intereses de vida, publicaciones y reposts útiles para acercarnos, estado civil, hijos, escolaridad, empresa, dónde estudió y el rango salarial solo si la persona lo publica (para el asesor; no va al mensaje al cliente).
+En todas las redes se busca, si está dicho o se ve: a quién sigue, intereses de vida, publicaciones y reposts útiles para acercarnos, estado civil, hijos, escolaridad, empresa, dónde estudió y el rango salarial solo si la persona lo publica (para el asesor; **nunca** en el mensaje al cliente). El meme, el clima y el ruido de interfaz no entran.
+
+**Substack:** bio, posts y restacks; OCR/resumen de imágenes cuando aplica.  
+**Reddit:** posts y comentarios útiles para el perfil comercial; se descartan memes y meta de karma.
 
 No versionar `*.json` de cookies ni carpetas `chrome_*_profile`.
 
-## Cumplimiento (proveedores de extracción)
+## Cumplimiento: Selenium y Firecrawl
 
-El motor usa dos vías distintas para obtener contenido web:
+El motor obtiene contenido web por dos vías:
 
-| Vía | Para qué | Dónde viven los datos del scrape |
+| Vía | Uso | Dónde queda el scrape |
 | --- | --- | --- |
-| **Selenium + Chrome** | Extraer perfiles con sesión del asesor | En el equipo / servidor de Global; Selenium HQ no recibe el contenido |
-| **Firecrawl Cloud** | Ingesta del sitio de producto y fichas públicas vía API | Pasan por la infraestructura de Firecrawl (EE. UU.), salvo self-host |
+| **Selenium + Chrome** | Extraer perfiles con sesión del asesor | Equipo/servidor de Global; Selenium HQ no recibe el contenido |
+| **Firecrawl Cloud** | Sitio de producto y fichas públicas vía API | Infraestructura de Firecrawl (EE. UU.), salvo self-host |
 
-Resumen operativo: un dato “público” no basta por sí solo; hace falta autorización o base legal. Los hechos se aprueban con revisión humana. Extraer en local no gasta créditos de Firecrawl.
+Puntos operativos:
 
-Documentación en `docs/cumplimiento/`:
+- “Público en internet” **no basta** por sí solo: hace falta autorización o base legal.
+- Quien usa IA de terceros (LLM, Firecrawl) sigue siendo responsable del tratamiento.
+- Los hechos se aprueban con revisión humana real.
+- Extraer en local **no** gasta créditos de Firecrawl; la API sí (Free: 1.000 créditos/mes orientativos).
+- Selenium no entrena modelos con el scrape local. En Firecrawl no hay confirmación pública inequívoca de “sí/no entrenan”; ZDR es Enterprise.
 
-- Guía: [docs/cumplimiento/guia.md](docs/cumplimiento/guia.md)
-- PDF principal: [docs/cumplimiento/proveedores-extraccion.pdf](docs/cumplimiento/proveedores-extraccion.pdf)
-- Fuentes oficiales: [docs/cumplimiento/fuentes-oficiales.pdf](docs/cumplimiento/fuentes-oficiales.pdf)
+### Documentos del proyecto
 
-## Pruebas
+| Documento | Contenido |
+| --- | --- |
+| [docs/cumplimiento/guia.md](docs/cumplimiento/guia.md) | Cómo aplica al motor |
+| [docs/cumplimiento/proveedores-extraccion.pdf](docs/cumplimiento/proveedores-extraccion.pdf) | PDF principal (privacidad, retención, costos, enlaces) |
+| [docs/cumplimiento/fuentes-oficiales.pdf](docs/cumplimiento/fuentes-oficiales.pdf) | Revisión con fuentes oficiales |
+| [docs/cumplimiento/enlaces.md](docs/cumplimiento/enlaces.md) | Lista de URLs oficiales |
 
-```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -q
-```
+### Enlaces oficiales (resumen)
+
+- Selenium docs: https://www.selenium.dev/documentation/
+- Privacidad ASF: https://privacy.apache.org/policies/privacy-policy-public.html
+- Firecrawl privacidad: https://www.firecrawl.dev/privacy-policy
+- Firecrawl términos: https://www.firecrawl.dev/terms-of-service
+- Firecrawl precios/créditos: https://www.firecrawl.dev/pricing
+- Firecrawl seguridad / ZDR: https://docs.firecrawl.dev/security
+- Firecrawl Trust Center: https://trust.firecrawl.dev/
+- Ley 1581 de 2012 (Colombia): https://www.funcionpublica.gov.co/eva/gestornormativo/norma.php?i=49981
+
+La lista completa está en [docs/cumplimiento/enlaces.md](docs/cumplimiento/enlaces.md) y en los PDF.
 
 ## Variables de entorno
 
@@ -114,3 +142,15 @@ Ver `.env.example`. Resumen:
 | `SCRAPE_HEADLESS`, `SCRAPE_MANUAL_LOGIN` | En contenedor: headless y sin login manual |
 
 El archivo `.env` no se sube al repositorio.
+
+## Pruebas
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -q
+```
+
+## Seguridad
+
+- No subir `.env`, cookies ni perfiles de Chrome.
+- No versionar listados reales de personas autorizadas con datos sensibles si la política interna lo prohíbe.
+- En Vercel, sin cookies vigentes las redes suelen bloquear el datacenter: la extracción con login se hace en local (http://127.0.0.1:8000).

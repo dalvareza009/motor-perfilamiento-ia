@@ -6,6 +6,7 @@ Referencia para el motor de perfilamiento IA de Global Seguros.
 
 - **PDF principal:** [proveedores-extraccion.pdf](./proveedores-extraccion.pdf)
 - **Revisión de fuentes oficiales:** [fuentes-oficiales.pdf](./fuentes-oficiales.pdf)
+- **Enlaces oficiales:** [enlaces.md](./enlaces.md)
 
 Cubren privacidad, retención, entrenamiento de modelos, seguridad, costos/créditos y enlaces oficiales de Selenium y Firecrawl, con notas de Ley 1581 de 2012 y Decreto 1074 de 2015 (Colombia).
 
