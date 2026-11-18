@@ -19,7 +19,7 @@ os.environ.setdefault("PGCONNECT_TIMEOUT", "8")     # que una BD caída no conge
 import psycopg2
 import requests
 from fastapi import Depends, FastAPI, Header, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from psycopg2 import sql
 from pydantic import BaseModel, ConfigDict, Field
@@ -27,7 +27,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from app import tareas  # noqa: I001  (primero: instala la captura de lo que imprimen los comandos)
 from app import (asesor, conocimiento, contenido, deduplicacion, embeddings, facebook_pagina, governance,
                  ingesta_actividad, ingesta_linkedin, ingesta_perfiles, ingesta_web, mensajes, ollama_client,
-                 perfil_redes, redes_seguidas, runtime_nube, segmentos, sesion_token, vectorizar)
+                 perfil_redes, perfiles_catalogo, redes_seguidas, runtime_nube, segmentos, sesion_token,
+                 vectorizar)
 from app import main as flujo_perfil
 from app.database import get_connection
 
@@ -37,6 +38,15 @@ FRONT = Path(__file__).resolve().parents[1] / "frontend"
 ESTADOS_MENSAJE = ["borrador", "requiere_revision", "aprobado", "enviado", "descartado"]
 
 app = FastAPI(title="Motor de perfilamiento IA", docs_url="/api/docs", openapi_url="/api/openapi.json")
+
+
+@app.on_event("startup")
+def _cargar_perfiles_catalogo():
+    """Deja en conocimiento los perfiles de cliente 2026 cada vez que arranca el API."""
+    try:
+        perfiles_catalogo.persistir()
+    except Exception as e:
+        print(f"Catálogo perfiles 2026 no se pudo guardar: {e}")
 
 
 # ------------------------------------------------------------------ errores legibles para la interfaz
@@ -240,6 +250,10 @@ def catalogo(s=Depends(sesion)):
         "dimensiones": sorted(segmentos.DIMENSIONES), "booleanas": sorted(segmentos.COLUMNAS_BOOL),
         "canales": sorted(asesor.CANALES), "estados_mensaje": ESTADOS_MENSAJE,
         "productos_sitio": {k: v[0] for k, v in ingesta_web.CATALOGO.items()},
+        "perfiles_cliente_2026": [
+            {"producto": p["producto"], "linea": p["linea"], "polizas": p["polizas"]}
+            for p in perfiles_catalogo.PERFILES
+        ],
         "k_min": governance.K_MIN, "limite_lote": asesor.LIMITE_LOTE, "limite_listado": governance.LIMITE_LISTADO,
     }
 
@@ -862,7 +876,7 @@ def _correr_ingesta_perfiles(tarea, nombres, urls, max_posts, usuario, todos=Fal
         objetivos, avisos = _objetivos_lote(nombres, [], todos=todos)
     if not objetivos:
         raise SystemExit(avisos[0] if avisos else
-                         "Pega URLs de LinkedIn, Facebook, Instagram o X, una por línea.")
+                         "Pega URLs de LinkedIn, Facebook, Instagram, X o Substack, una por línea.")
     if len(objetivos) > TOPE_LOTE:
         print(f"Este lote toma los primeros {TOPE_LOTE} perfiles (había {len(objetivos)}).")
         objetivos = objetivos[:TOPE_LOTE]
@@ -992,6 +1006,7 @@ def perfiles_personas(s=Depends(sesion)):
     ingesta_perfiles.asegurar_tabla()
     cats = contenido.excluidas_de_ficha()
     cats_red = list(redes_seguidas.CATEGORIAS_RED)
+    cats_ficha = list(ingesta_perfiles.CATEGORIAS_FICHA_COMPLETA)
     return _consulta("""SELECT nombre, MAX(clave_cliente) AS clave_cliente,
                                COUNT(*) FILTER (WHERE NOT activo AND NOT descartado
                                     AND categoria <> ALL(%s)) AS pendientes,
@@ -1000,9 +1015,11 @@ def perfiles_personas(s=Depends(sesion)):
                                COUNT(*) FILTER (WHERE activo) AS aprobados,
                                COUNT(*) FILTER (WHERE descartado AND NOT activo) AS descartados,
                                STRING_AGG(DISTINCT red, ', ') AS redes,
+                               BOOL_OR(categoria = ANY(%s)) AS completo,
                                MAX(fecha_actualizacion) AS actualizado
-                        FROM public.hechos_perfil GROUP BY nombre ORDER BY nombre""",
-                     (cats, cats_red))
+                        FROM public.hechos_perfil GROUP BY nombre
+                        ORDER BY MAX(fecha_actualizacion) DESC NULLS LAST, nombre""",
+                     (cats, cats_red, cats_ficha))
 
 
 class FiltroHechos(BaseModel):
@@ -1034,12 +1051,12 @@ def perfiles_hechos(datos: FiltroHechos, s=Depends(sesion)):
                                 activo, descartado, fecha_actualizacion
                          FROM public.hechos_perfil
                          WHERE {where} AND (%s = '' OR LOWER(nombre) = LOWER(%s))
-                         ORDER BY CASE categoria
+                         ORDER BY fecha_actualizacion DESC NULLS LAST, CASE categoria
                             WHEN 'Gusto' THEN 0
                             WHEN 'Sigue a' THEN 1
                             WHEN 'Repost' THEN 2
                             WHEN 'Seguidor' THEN 3
-                            ELSE 4 END, titulo, id_hecho DESC
+                            ELSE 4 END, id_hecho DESC
                          LIMIT %s""",
                      params)
 
@@ -1069,6 +1086,17 @@ def perfiles_contenido(datos: FiltroContenido, s=Depends(sesion)):
     """Publicaciones de todas las redes de las personas a las que se les hizo scraping."""
     exigir(s, "admin_perfiles")
     return contenido.listar(nombre=datos.nombre, red=datos.red, limite=datos.limite)
+
+
+@app.get("/api/perfiles/contenido/imagen/{ident}")
+def perfiles_contenido_imagen(ident: str, s=Depends(sesion)):
+    """Foto capturada de una publicación, para ver de qué trata."""
+    exigir(s, "admin_perfiles")
+    from app.imagenes_pub import ruta
+    archivo = ruta(ident)
+    if not archivo:
+        raise HTTPException(404, "Esa imagen no está guardada.")
+    return FileResponse(archivo, media_type="image/png")
 
 
 class NombrePersona(BaseModel):
@@ -1270,6 +1298,18 @@ def _abrir_bot(red, tarea):
             cookie_file=str(raiz / "x_cookies.json"),
             profile_dir=str(raiz / "chrome_x_profile"),
             confirmar_login=login)
+    elif red == "substack":
+        from substack_activity_scraper import SubstackActivityScraper
+        bot = SubstackActivityScraper(
+            cookie_file=str(raiz / "substack_cookies.json"),
+            profile_dir=str(raiz / "chrome_substack_profile"),
+            confirmar_login=login)
+    elif red == "reddit":
+        from reddit_activity_scraper import RedditActivityScraper
+        bot = RedditActivityScraper(
+            cookie_file=str(raiz / "reddit_cookies.json"),
+            profile_dir=str(raiz / "chrome_reddit_profile"),
+            confirmar_login=login)
     else:
         return None
     if bot.iniciar_navegador():
@@ -1281,18 +1321,35 @@ def _abrir_bot(red, tarea):
 def _procesar_con_bot(red, bot, url, max_posts, usuario, redactar=True):
     """Ficha + seguidores/reposts + publicaciones, con el Chrome ya abierto."""
     if red == "linkedin":
-        info = bot.extraer_informacion_perfil(url)
-        posts = bot.extraer_publicaciones_perfil(url, max_posts=max_posts)
-        info = bot.info_perfil.get(url) or info
+        info, posts = {"perfil": url, "nombre": ""}, []
+        try:
+            info = bot.extraer_informacion_perfil(url) or info
+        except Exception as e:
+            print(f"No se leyó la ficha de LinkedIn: {e}")
+        try:
+            posts = bot.extraer_publicaciones_perfil(url, max_posts=max_posts) or []
+        except Exception as e:
+            print(f"No se leyeron publicaciones de LinkedIn: {e}")
+            posts = []
+        info = bot.info_perfil.get(url) or bot.info_perfil.get(
+            getattr(bot, "_canon_perfil", lambda u: u)(url)) or info
         ficha = "\n".join(p for p in (
             info.get("titular"), info.get("bio"), info.get("acerca"), info.get("experiencia"),
             info.get("educacion"), info.get("ubicacion"),
             info.get("paginas_seguidas"), info.get("interacciones")) if p)
         info = perfil_redes.aplicar_lo_publicado(
             info, [{"tipo": "publicacion", "texto": ficha}], origen="ficha")
-        bot.guardar_cookies()
-        bot.analizar_publicaciones(posts)
-        bot.imprimir_recomendaciones()
+        try:
+            bot.guardar_cookies()
+        except Exception:
+            pass
+        from app.discernimiento import filtrar_posts
+        posts = filtrar_posts(posts)
+        try:
+            bot.analizar_publicaciones(posts)
+            bot.imprimir_recomendaciones()
+        except Exception as e:
+            print(f"No se analizaron las publicaciones de LinkedIn: {e}")
         analisis = bot
     else:
         info = bot.extraer_informacion_perfil(url)
@@ -1305,11 +1362,16 @@ def _procesar_con_bot(red, bot, url, max_posts, usuario, redactar=True):
             print(f"No se leyeron publicaciones de {red}: {e}")
             posts = []
         info = bot.info or info
+        from app.discernimiento import filtrar_posts
+        posts = filtrar_posts(posts)
         bot.analisis.analizar_publicaciones(posts)
         bot.analisis.imprimir_recomendaciones()
         analisis = bot.analisis
     quien = _persona_autorizada(url) or {}
-    nombre = (info or {}).get("nombre") or quien.get("nombre") or ""
+    nombre = perfil_redes.nombre_de_perfil(
+        (info or {}).get("nombre") or quien.get("nombre") or "", url)
+    if info is not None:
+        info["nombre"] = nombre
     quien = {"nombre": nombre, "clave_cliente": quien.get("clave_cliente")}
     guardado = ingesta_actividad.persistir(quien, red, url, info, posts)
     if nombre:
@@ -1519,6 +1581,21 @@ def facebook_paginas_quitar(url: str, s=Depends(sesion)):
     return {"ok": True}
 
 
+@app.get("/api/perfiles/posibles-vinculos")
+def perfiles_posibles_vinculos(s=Depends(sesion)):
+    """Personas traídas por URL (páginas de Facebook o lista general). No van a Vincular hasta tener ficha."""
+    exigir(s, "admin_perfiles")
+    return {"personas": facebook_pagina.listar_posibles()}
+
+
+@app.delete("/api/facebook/pagina/persona")
+def facebook_pagina_quitar_persona(url: str, pagina: str = "", s=Depends(sesion)):
+    exigir(s, "admin_perfiles")
+    if not facebook_pagina.quitar_interactuante(url, pagina.strip() or None):
+        raise HTTPException(404, "Esa persona no estaba en la lista.")
+    return {"ok": True}
+
+
 class PedidoRecopilar(BaseModel):
     url: str = ""
     urls: list[str] = []
@@ -1688,6 +1765,83 @@ def x_continuar(id_tarea: str, s=Depends(sesion)):
 
 @app.post("/api/x/actividad/{id_tarea}/cancelar")
 def x_cancelar(id_tarea: str, s=Depends(sesion)):
+    exigir(s, "admin_perfiles")
+    return _resolver_espera(id_tarea, "cancelar", s)
+
+
+# ------------------------------------------------- Substack con tu sesión (mismo criterio)
+def _correr_substack_sesion(tarea, url, max_posts, usuario, informar_avance=True, redactar=True):
+    return _correr_sesion("substack", tarea, url, max_posts, usuario, informar_avance, redactar)
+
+
+@app.post("/api/substack/actividad")
+def substack_actividad(datos: PedidoActividad, s=Depends(sesion)):
+    """Extrae ficha + posts de UN perfil o newsletter de Substack."""
+    exigir(s, "admin_perfiles")
+    clasificada = perfil_redes.clasificar_url(datos.url.strip())
+    if not clasificada or clasificada[0] != "substack":
+        raise HTTPException(
+            400, "Indica la URL de Substack: https://substack.com/@usuario o https://usuario.substack.com/")
+    url = clasificada[1]
+    t = tareas.lanzar("extraccion_substack", f"Actividad Substack: {url}", s["usuario"],
+                      _correr_substack_sesion, url, datos.max_posts, s["usuario"])
+    governance.registrar(s["usuario"], s["rol"], "leer_substack_sesion",
+                         {"origen": "web", "url": url, "max_posts": datos.max_posts}, 0)
+    return {"tarea": t.vista()}
+
+
+@app.get("/api/substack/actividad/esperas")
+def substack_esperas(s=Depends(sesion)):
+    exigir(s, "admin_perfiles")
+    return linkedin_esperas(s)
+
+
+@app.post("/api/substack/actividad/{id_tarea}/continuar")
+def substack_continuar(id_tarea: str, s=Depends(sesion)):
+    exigir(s, "admin_perfiles")
+    return _resolver_espera(id_tarea, "continuar", s)
+
+
+@app.post("/api/substack/actividad/{id_tarea}/cancelar")
+def substack_cancelar(id_tarea: str, s=Depends(sesion)):
+    exigir(s, "admin_perfiles")
+    return _resolver_espera(id_tarea, "cancelar", s)
+
+
+def _correr_reddit_sesion(tarea, url, max_posts, usuario, informar_avance=True, redactar=True):
+    return _correr_sesion("reddit", tarea, url, max_posts, usuario, informar_avance, redactar)
+
+
+@app.post("/api/reddit/actividad")
+def reddit_actividad(datos: PedidoActividad, s=Depends(sesion)):
+    """Extrae ficha + posts/comentarios útiles de UN perfil de Reddit."""
+    exigir(s, "admin_perfiles")
+    clasificada = perfil_redes.clasificar_url(datos.url.strip())
+    if not clasificada or clasificada[0] != "reddit":
+        raise HTTPException(
+            400, "Indica la URL de Reddit: https://www.reddit.com/user/usuario")
+    url = clasificada[1]
+    t = tareas.lanzar("extraccion_reddit", f"Actividad Reddit: {url}", s["usuario"],
+                      _correr_reddit_sesion, url, datos.max_posts, s["usuario"])
+    governance.registrar(s["usuario"], s["rol"], "leer_reddit_sesion",
+                         {"origen": "web", "url": url, "max_posts": datos.max_posts}, 0)
+    return {"tarea": t.vista()}
+
+
+@app.get("/api/reddit/actividad/esperas")
+def reddit_esperas(s=Depends(sesion)):
+    exigir(s, "admin_perfiles")
+    return linkedin_esperas(s)
+
+
+@app.post("/api/reddit/actividad/{id_tarea}/continuar")
+def reddit_continuar(id_tarea: str, s=Depends(sesion)):
+    exigir(s, "admin_perfiles")
+    return _resolver_espera(id_tarea, "continuar", s)
+
+
+@app.post("/api/reddit/actividad/{id_tarea}/cancelar")
+def reddit_cancelar(id_tarea: str, s=Depends(sesion)):
     exigir(s, "admin_perfiles")
     return _resolver_espera(id_tarea, "cancelar", s)
 

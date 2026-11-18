@@ -9,11 +9,15 @@ import time
 import unicodedata
 from collections import Counter
 
+# Van a «Seguidores e intereses», nunca a Revisión de hechos.
 CATEGORIAS_RED = (
     "Seguidor",
     "Sigue a",
     "Repost",
     "Gusto",
+    "Interacciones",
+    "Paginas seguidas",
+    "Interes",
 )
 
 RUIDO = {
@@ -43,12 +47,16 @@ def tope_publicaciones(max_posts, defecto=10):
     return min(10, max(1, n))
 
 
-def elegir_publicaciones(publicaciones, max_posts, grupo_de=None, es_catalogo=None):
-    """Hasta max_posts en total. Primero las que encajan con el catálogo; el resto se reparte entre tipos."""
+def elegir_publicaciones(publicaciones, max_posts, grupo_de=None, es_catalogo=None,
+                         solo_utiles=False):
+    """Hasta max_posts. Primero las que nutren el perfil; si solo_utiles, no rellena con ruido."""
     n = tope_publicaciones(max_posts)
     posts = list(publicaciones or [])
     if not posts or n < 1:
         return []
+    if es_catalogo is None and solo_utiles:
+        from app.discernimiento import sirve_post
+        es_catalogo = sirve_post
     es_catalogo = es_catalogo or (lambda _p: False)
     grupo_de = grupo_de or (lambda p: p.get("tipo") or "publicacion")
     usados = set()
@@ -67,6 +75,9 @@ def elegir_publicaciones(publicaciones, max_posts, grupo_de=None, es_catalogo=No
             tomar(post)
             if len(elegidas) >= n:
                 return elegidas
+
+    if solo_utiles:
+        return elegidas
 
     grupos = {}
     for post in posts:
@@ -119,6 +130,16 @@ def handle_de_url(url, red=""):
         m = re.search(r"instagram\.com/([^/?#]+)", u, re.I)
         h = m.group(1) if m else ""
         return "" if h.lower() in ("p", "reel", "reels", "stories", "explore") else h
+    if red == "substack" or "substack.com" in u:
+        m = re.search(r"substack\.com/@([^/?#]+)", u, re.I)
+        if m:
+            return m.group(1)
+        m = re.search(r"https?://([a-z0-9-]+)\.substack\.com", u, re.I)
+        h = m.group(1) if m else ""
+        return "" if h.lower() in ("www", "api", "cdn", "open") else h
+    if red == "reddit" or "reddit.com/" in u:
+        m = re.search(r"reddit\.com/(?:user|u)/([^/?#]+)", u, re.I)
+        return (m.group(1) if m else "")
     return ""
 
 
@@ -272,6 +293,16 @@ return [...root.querySelectorAll('[role="listitem"] a, [role="article"] a, a[hre
 });
 """
 
+SCRIPT_SUBSTACK_READS = """
+return [...document.querySelectorAll('a[href]')].map(a => {
+    const href = a.href || '';
+    if (!/substack\\.com/i.test(href)) return '';
+    if (/\\/(sign-in|login|explore|home|inbox|publish)\\/?$/i.test(href)) return '';
+    const t = ((a.innerText || '').split('\\n').map(x => x.trim()).filter(Boolean)[0] || '').trim();
+    return t;
+});
+"""
+
 SCRIPT_CLICK_IG = """
 const tipo = arguments[0];
 const raiz = document.querySelector('header') || document;
@@ -303,6 +334,22 @@ for (const a of document.querySelectorAll('a')) {
 return false;
 """
 
+SCRIPT_CLICK_LINKEDIN_INTERESES = """
+const claves = ['mostrar todos los intereses', 'show all interests',
+                'ver todos los intereses', 'see all interests'];
+const rota = /\\/details\\/interests\\/(companies|groups|schools|influencers|newsletters|top-voices)/;
+for (const a of document.querySelectorAll('a, button')) {
+    const t = (a.innerText || '').trim().toLowerCase();
+    const href = (a.getAttribute('href') || '').toLowerCase();
+    if (rota.test(href) || /companies|groups|schools|influencers|newsletters/.test(href)) continue;
+    if (claves.some(c => t.includes(c))) { a.click(); return t || href; }
+    if (href.includes('/details/interests') && (href.endsWith('/interests') || href.endsWith('/interests/'))) {
+        a.click(); return href;
+    }
+}
+return '';
+"""
+
 SCRIPT_CERRAR_DIALOGO = """
 const d = document.querySelector('[role="dialog"]');
 if (!d) return false;
@@ -324,7 +371,7 @@ def _esperar(driver, js, segundos=12):
     return False
 
 
-def recolectar_lista(driver, script, tope=TOPE_LISTA, estancadas=6, espera=0.65, max_segundos=80):
+def recolectar_lista(driver, script, tope=TOPE_LISTA, estancadas=3, espera=0.4, max_segundos=14):
     """Lee nombres y hace scroll del listado hasta que no entren más."""
     vistos, claves = [], set()
     iguales = 0
@@ -443,17 +490,108 @@ def hechos_de_red(info, posts=None):
     for nombre, n in info.get("reposts") or []:
         veces = "un repost" if n == 1 else f"{n} reposts"
         agregar("Repost", nombre, f"{dueno} compartió o reposteó contenido de esta cuenta ({veces}).")
+    detalle = str(info.get("interacciones") or "").strip()
+    if len(detalle) > 8:
+        hechos.append({
+            "categoria": "Interacciones",
+            "titulo": "Interacciones",
+            "contenido": detalle[:400],
+        })
     from app.gustos import hechos_de_gustos
     hechos.extend(hechos_de_gustos(info, posts=posts))
     return hechos
 
 
-def _ir(driver, url, espera=2.5):
+# LinkedIn responde 404 en las pestañas de intereses (companies/groups/schools…).
+# Entrar ahí corta el scrape de CUALQUIER perfil con «Esta página no existe».
+_RUTA_INTERESES_404 = re.compile(
+    r"/details/interests/(?:companies|groups|schools|influencers|newsletters|top-voices)(?:/|\?|$)",
+    re.I,
+)
+_MARCAS_404 = (
+    "esta página no existe", "esta pagina no existe",
+    "this page doesn’t exist", "this page doesn't exist",
+    "this page does not exist", "page not found",
+    "no podemos encontrar esta página", "no podemos encontrar esta pagina",
+    "couldn't find this page", "couldn’t find this page",
+)
+
+
+def ruta_linkedin_rota(url=""):
+    """True si esa URL de LinkedIn, hoy, cae en la página de 'no existe'."""
+    return bool(_RUTA_INTERESES_404.search(url or ""))
+
+
+def es_404_linkedin(url="", titulo="", encabezado="", cuerpo="", hay_perfil=False):
+    """404 real de LinkedIn. Un comentario que cite 'no existe' no cuenta."""
+    u = (url or "").lower()
+    if ruta_linkedin_rota(u) or "/404" in u or "page-not-found" in u or "pagenotfound" in u:
+        return True
+    if hay_perfil:
+        return False
+    visible = f"{titulo or ''} {encabezado or ''}".lower()
+    if any(m in visible for m in _MARCAS_404):
+        return True
+    cabeza = (cuerpo or "")[:500].lower()
+    return any(m in cabeza for m in _MARCAS_404)
+
+
+def _hay_h1_de_perfil(driver):
+    try:
+        for h1 in (driver.find_elements("css selector", "main h1, h1") or [])[:6]:
+            t = (h1.text or "").strip()
+            if len(t) < 2:
+                continue
+            baja = t.lower()
+            if any(m in baja for m in _MARCAS_404):
+                continue
+            if baja in {"linkedin", "feed"}:
+                continue
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def _pagina_inexistente(driver):
+    try:
+        url = driver.current_url or ""
+        titulo = driver.execute_script("return document.title || '';") or ""
+        encabezado = driver.execute_script(
+            "const h=document.querySelector('main h1, h1'); return (h && h.innerText) || '';") or ""
+        cuerpo = driver.execute_script(
+            "return (document.body && document.body.innerText) || '';") or ""
+        hay_perfil = _hay_h1_de_perfil(driver)
+    except Exception:
+        return False
+    return es_404_linkedin(url, titulo, encabezado, cuerpo, hay_perfil)
+
+
+def _volver(driver, url):
+    if not url:
+        return
+    try:
+        driver.get(url)
+        time.sleep(0.7)
+    except Exception:
+        pass
+
+
+def _ir(driver, url, espera=1.1, volver_a=None):
+    if ruta_linkedin_rota(url):
+        print(f"    Ruta que LinkedIn ya no sirve, se omite: {url}")
+        return False
     try:
         driver.get(url)
         time.sleep(espera)
+        if _pagina_inexistente(driver):
+            print(f"    Esa ruta no existe, se omite: {url}")
+            _volver(driver, volver_a)
+            return False
         return True
-    except Exception:
+    except Exception as e:
+        print(f"    No se pudo abrir {url}: {e}")
+        _volver(driver, volver_a)
         return False
 
 
@@ -508,53 +646,49 @@ def extraer_red_social(driver, red, profile_url, info, posts=None):
 
     if red == "x":
         if _ir(driver, base + "/following"):
-            _fusionar(info, "sigue_a", recolectar_lista(driver, SCRIPT_X_CELDAS))
+            _fusionar(info, "sigue_a", recolectar_lista(driver, SCRIPT_X_CELDAS, tope=50, max_segundos=10))
         if _ir(driver, base + "/followers"):
-            _fusionar(info, "seguidores", recolectar_lista(driver, SCRIPT_X_CELDAS, tope=80, max_segundos=35))
+            _fusionar(info, "seguidores", recolectar_lista(driver, SCRIPT_X_CELDAS, tope=40, max_segundos=8))
     elif red == "instagram":
         handle = info.get("handle") or handle_de_url(profile_url, "instagram")
         _ir(driver, base + "/")
         abierto = _click_js(driver, SCRIPT_CLICK_IG, "following")
-        if not abierto or not _esperar(driver, hay_dialogo, 8):
+        if not abierto or not _esperar(driver, hay_dialogo, 5):
             if handle:
                 _ir(driver, f"https://www.instagram.com/{handle}/following/")
-        if _esperar(driver, hay_dialogo, 16):
-            time.sleep(1.0)
-            _fusionar(info, "sigue_a", recolectar_lista(driver, SCRIPT_INSTAGRAM_DIALOG, tope=250))
+        if _esperar(driver, hay_dialogo, 8):
+            time.sleep(0.5)
+            _fusionar(info, "sigue_a", recolectar_lista(driver, SCRIPT_INSTAGRAM_DIALOG, tope=80, max_segundos=10))
         _cerrar_dialogo(driver)
         abierto_f = _click_js(driver, SCRIPT_CLICK_IG, "followers")
-        if not abierto_f or not _esperar(driver, hay_dialogo, 6):
+        if not abierto_f or not _esperar(driver, hay_dialogo, 4):
             if handle:
                 _ir(driver, f"https://www.instagram.com/{handle}/followers/")
-        if _esperar(driver, hay_dialogo, 8):
+        if _esperar(driver, hay_dialogo, 5):
             _fusionar(info, "seguidores", recolectar_lista(
-                driver, SCRIPT_INSTAGRAM_DIALOG, tope=60, max_segundos=25))
+                driver, SCRIPT_INSTAGRAM_DIALOG, tope=40, max_segundos=8))
         _cerrar_dialogo(driver)
     elif red == "facebook":
         urls = _urls_facebook_red(profile_url)
         if _ir(driver, urls["following"]):
-            _fusionar(info, "sigue_a", recolectar_lista(driver, SCRIPT_FACEBOOK_LISTA))
+            _fusionar(info, "sigue_a", recolectar_lista(driver, SCRIPT_FACEBOOK_LISTA, tope=50, max_segundos=10))
         if _ir(driver, urls["likes"]):
-            _fusionar(info, "sigue_a", recolectar_lista(driver, SCRIPT_FACEBOOK_LISTA))
+            _fusionar(info, "sigue_a", recolectar_lista(driver, SCRIPT_FACEBOOK_LISTA, tope=50, max_segundos=8))
         if _ir(driver, urls["groups"]):
-            _fusionar(info, "sigue_a", recolectar_lista(driver, SCRIPT_FACEBOOK_LISTA))
+            _fusionar(info, "sigue_a", recolectar_lista(driver, SCRIPT_FACEBOOK_LISTA, tope=30, max_segundos=6))
         if _ir(driver, urls["followers"]):
             _fusionar(info, "seguidores", recolectar_lista(
-                driver, SCRIPT_FACEBOOK_LISTA, tope=80, max_segundos=35))
+                driver, SCRIPT_FACEBOOK_LISTA, tope=40, max_segundos=8))
     elif red == "linkedin":
-        for ruta in ("details/interests/", "details/interests/companies/",
-                     "details/interests/groups/", "details/interests/schools/",
-                     "details/interests/influencers/", "details/interests/newsletters/"):
-            if _ir(driver, base + "/" + ruta):
-                _fusionar(info, "sigue_a", recolectar_lista(driver, SCRIPT_LINKEDIN_INTERESES, tope=200))
-        if _ir(driver, base + "/"):
-            if _click_js(driver, SCRIPT_CLICK_LINKEDIN_SEGUIDORES):
-                time.sleep(2.2)
-            else:
-                _ir(driver, base + "/overlay/followers/")
-            _fusionar(info, "seguidores", recolectar_lista(
-                driver, SCRIPT_LINKEDIN_PERSONAS, tope=80, max_segundos=35))
-            _cerrar_dialogo(driver)
+        # Intereses visibles en la ficha. Sin overlay de seguidores ni /details/.
+        _fusionar(info, "sigue_a", recolectar_lista(
+            driver, SCRIPT_LINKEDIN_INTERESES, tope=40, max_segundos=5, estancadas=2))
+    elif red == "substack":
+        handle = info.get("handle") or handle_de_url(profile_url, "substack")
+        reads = f"https://substack.com/@{handle}/reads" if handle else (base.rstrip("/") + "/reads")
+        if _ir(driver, reads):
+            _fusionar(info, "sigue_a", recolectar_lista(
+                driver, SCRIPT_SUBSTACK_READS, tope=40, max_segundos=8, estancadas=2))
 
     info = aplicar_a_info(info, posts=posts)
     n = info.get("resumen_red") or "sin listas visibles"

@@ -46,6 +46,8 @@ _COOKIES_ENV = (
     ("COOKIES_LINKEDIN_JSON", "linkedin_cookies.json"),
     ("COOKIES_FACEBOOK_JSON", "facebook_cookies.json"),
     ("COOKIES_INSTAGRAM_JSON", "instagram_cookies.json"),
+    ("COOKIES_SUBSTACK_JSON", "substack_cookies.json"),
+    ("COOKIES_REDDIT_JSON", "reddit_cookies.json"),
 )
 
 

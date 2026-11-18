@@ -105,6 +105,67 @@ def _sin_tilde(texto):
     return "".join(c for c in t if unicodedata.category(c) != "Mn")
 
 
+# En páginas de seguros de Colombia solo importan quienes viven o son de aquí.
+_MARCA_COLOMBIA = (
+    "colombia", "colombiano", "colombiana", "colombianos", "colombianas",
+)
+_LUGAR_COLOMBIA = (
+    "bogota", "medellin", "cali", "barranquilla", "cartagena", "bucaramanga",
+    "pereira", "manizales", "cucuta", "ibague", "villavicencio", "santa marta",
+    "pasto", "armenia", "neiva", "sincelejo", "monteria", "valledupar", "tunja",
+    "popayan", "riohacha", "chia", "soacha", "bello", "envigado", "itagui",
+    "zipaquira", "sabaneta", "rionegro", "palmira", "soledad", "cajica",
+    "mosquera", "funza", "fusagasuga", "girardot", "duitama", "sogamoso",
+    "tulua", "giron", "floridablanca", "piedecuesta", "malambo", "cota",
+    "facatativa", "yopal", "florencia", "quibdo", "arauca", "leticia",
+    "san andres", "segovia", "remedios", "apartado", "turbo", "magangue",
+    "dosquebradas", "itague", "antioquia", "cundinamarca", "atlantico",
+    "bolivar", "valle del cauca", "santander", "norte de santander", "boyaca",
+    "tolima", "huila", "narino", "cauca", "magdalena", "cesar", "cordoba",
+    "sucre", "caldas", "risaralda", "quindio", "meta", "casanare", "choco",
+    "caqueta", "putumayo", "guajira", "amazonas", "vichada", "vaupes",
+    "guainia", "guaviare",
+)
+_EXTRANJERO = (
+    "mexico", "espana", "spain", "argentina", "chile", "peru", "ecuador",
+    "brasil", "brazil", "estados unidos", "united states", "miami", "orlando",
+    "houston", "new york", "nueva york", "madrid", "barcelona", "cdmx",
+    "ciudad de mexico", "lima", "santiago de chile", "buenos aires", "quito",
+    "caracas", "panama", "costa rica", "guatemala", "honduras", "el salvador",
+    "uruguay", "paraguay", "bolivia", "italia", "francia", "alemania",
+    "canada", "australia", "inglaterra", "londres", "portugal",
+)
+
+
+def _texto_lugar(persona):
+    if isinstance(persona, dict):
+        partes = [persona.get("ubicacion"), persona.get("ficha"),
+                  persona.get("acercamiento"), persona.get("contacto")]
+        info = persona.get("info") if isinstance(persona.get("info"), dict) else {}
+        partes.extend([info.get("ubicacion"), info.get("acerca")])
+        textos = persona.get("textos") if isinstance(persona.get("textos"), list) else _partir(persona.get("textos"))
+        partes.extend(textos or [])
+        return " ".join(str(p or "") for p in partes)
+    return str(persona or "")
+
+
+def es_de_colombia(persona):
+    """True si vive o es de Colombia, False si es claramente de otro país, None si no se sabe."""
+    n = _sin_tilde(_texto_lugar(persona))
+    if not n.strip():
+        return None
+    if any(m in n for m in _MARCA_COLOMBIA) or any(m in n for m in _LUGAR_COLOMBIA):
+        return True
+    if any(m in n for m in _EXTRANJERO):
+        return False
+    return None
+
+
+def es_relevante_colombia(persona):
+    """En páginas de seguros: se queda si es de Colombia o aún no hay ubicación."""
+    return es_de_colombia(persona) is not False
+
+
 def clasificar_reaccion(texto):
     """-> (positiva|negativa, nombre visible) según el tipo de reacción de Facebook."""
     n = _sin_tilde(texto)
@@ -282,13 +343,32 @@ def _nombre_ok(nombre):
     return t[:120]
 
 
+_TIEMPO_COMENTARIO = re.compile(
+    r"^(hace\s+)?\d+\s*(min|h|d|sem|semana|mes|año|hr|hour|day|week|month|year)s?\b",
+    re.I)
+
+
+def _texto_es_el_nombre(texto, nombre):
+    """True si Facebook nos dejó el autor, no la frase del comentario."""
+    t = re.sub(r"\s+", " ", str(texto or "")).strip()
+    n = _nombre_ok(nombre)
+    if not t:
+        return True
+    if _TIEMPO_COMENTARIO.match(t) or t.lower() in _RUIDO_NOMBRE:
+        return True
+    if not n:
+        return False
+    a, b = _sin_tilde(t), _sin_tilde(n)
+    return a == b or (b.startswith(a) and len(a) >= 4)
+
+
 def _unir(valores, sep=" | "):
     vistos, partes = set(), []
     for v in valores or []:
         t = re.sub(r"\s+", " ", str(v or "")).strip()
         if t and t.lower() not in vistos:
             vistos.add(t.lower())
-            partes.append(t[:400])
+            partes.append(t[:4000])
     return sep.join(partes)
 
 
@@ -351,8 +431,20 @@ def fusionar(personas, entrada):
     elif tipo in {"comentario", "comment"}:
         hallada["comentarios"] += 1
         t = re.sub(r"\s+", " ", str(entrada.get("texto") or "")).strip()
-        if t and t not in hallada["textos"]:
-            hallada["textos"].append(t[:400])
+        if t and not _texto_es_el_nombre(t, hallada.get("nombre") or nombre) and t not in hallada["textos"]:
+            hallada["textos"].append(t)
+        if reaccion:
+            hallada.setdefault("reacciones", [])
+            if isinstance(hallada.get("reacciones"), str):
+                hallada["reacciones"] = _partir(hallada["reacciones"])
+            polaridad, nombre_r = clasificar_reaccion(reaccion)
+            if nombre_r not in hallada["reacciones"]:
+                hallada["reacciones"].append(nombre_r)
+                if polaridad == "negativa":
+                    hallada["reacciones_neg"] = int(hallada.get("reacciones_neg") or 0) + 1
+                else:
+                    hallada["likes"] += 1
+                    hallada["reacciones_pos"] = int(hallada.get("reacciones_pos") or 0) + 1
     pub = re.sub(r"\s+", " ", str(entrada.get("publicacion") or "")).strip()
     if pub and pub not in hallada["publicaciones"]:
         hallada["publicaciones"].append(pub[:300])
@@ -386,25 +478,30 @@ def acercamiento(persona, pagina_nombre=""):
     textos = persona.get("textos") if isinstance(persona.get("textos"), list) else _partir(persona.get("textos"))
     pubs = persona.get("publicaciones") if isinstance(persona.get("publicaciones"), list) else _partir(persona.get("publicaciones"))
     reacciones = persona.get("reacciones") if isinstance(persona.get("reacciones"), list) else _partir(persona.get("reacciones"))
-    if n_com:
-        if textos:
-            tono = tono_comentario(textos[0])
+    if textos:
+        for t in textos:
+            if not t:
+                continue
+            tono = tono_comentario(t)
             if tono == "desagrado":
-                partes.append(f"Comentó en {pagina} con desagrado: «{textos[0][:180]}». Abordar con cuidado.")
+                partes.append(f"Comentario en {pagina} (negativo): «{t}». Abordar con cuidado.")
             elif tono == "interés":
-                partes.append(f"Comentó en {pagina} con interés: «{textos[0][:180]}». Responder a eso.")
+                partes.append(f"Comentario en {pagina} (positivo): «{t}». Responder a eso.")
             else:
-                partes.append(f"Comentó en {pagina}: «{textos[0][:180]}». Responder a eso.")
-        else:
-            partes.append(f"Comentó {n_com} vez(ces) en {pagina}. Ya abrió conversación.")
+                partes.append(f"Comentario en {pagina}: «{t}».")
+    elif n_com:
+        partes.append(f"Comentó {n_com} vez(ces) en {pagina}, pero Facebook no dejó leer el texto.")
     if n_share:
         partes.append(f"Compartió {n_share} publicación(es). El contenido le importó lo suficiente para reenviarlo.")
-    if n_neg:
-        detalle = ", ".join(r for r in reacciones if r in {"Me enoja", "Me entristece"}) or "reacción negativa"
-        partes.append(f"{n_neg} reacción(es) negativa(s) ({detalle}). Hay desagrado; no insistir con el mismo mensaje.")
-    if n_pos:
-        detalle = ", ".join(r for r in reacciones if r not in {"Me enoja", "Me entristece"}) or "Me gusta"
-        partes.append(f"{n_pos} reacción(es) positiva(s) ({detalle}). Mostró interés en lo publicado.")
+    if reacciones:
+        partes.append("Reaccionó con: " + ", ".join(reacciones) + ".")
+    elif n_neg or n_pos:
+        detalle_neg = ", ".join(r for r in reacciones if r in {"Me enoja", "Me entristece"}) or "Me enoja o Me entristece"
+        detalle_pos = ", ".join(r for r in reacciones if r not in {"Me enoja", "Me entristece"}) or "Me gusta"
+        if n_neg:
+            partes.append(f"{n_neg} reacción(es) negativa(s) ({detalle_neg}). Hay desagrado; no insistir con el mismo mensaje.")
+        if n_pos:
+            partes.append(f"{n_pos} reacción(es) positiva(s) ({detalle_pos}). Mostró interés en lo publicado.")
     mezcla = " ".join(list(textos or []) + list(pubs or []) + [persona.get("ficha") or ""])
     vistos = set()
     for cat in clasificar(mezcla)[:3]:
@@ -430,35 +527,47 @@ def acercamiento(persona, pagina_nombre=""):
 
 
 def hechos_de_interactuante(persona, pagina_nombre=""):
-    """Hechos para la ficha: comentario acotado y reacciones buenas/malas."""
+    """Hechos para la ficha: el comentario textual y el nombre de cada reacción."""
     pagina = pagina_nombre or "la página"
     hechos = []
     textos = persona.get("textos") if isinstance(persona.get("textos"), list) else _partir(persona.get("textos"))
-    for i, t in enumerate(textos[:6], 1):
+    nombre = persona.get("nombre") or ""
+    for i, t in enumerate(textos[:20], 1):
+        t = str(t or "").strip()
+        if not t or _texto_es_el_nombre(t, nombre):
+            continue
         tono = tono_comentario(t)
+        extra = ""
         if tono == "desagrado":
-            etiqueta = "le disgusta"
+            extra = " Tono: negativo."
         elif tono == "interés":
-            etiqueta = "le interesa"
-        else:
-            etiqueta = "comentó"
+            extra = " Tono: positivo."
         titulo = "Comentario" if i == 1 else f"Comentario ({i})"
         hechos.append({
             "categoria": "Comentario",
             "titulo": titulo,
-            "contenido": f"En {pagina} {etiqueta}: «{t[:220]}».",
+            "contenido": f"Comentario en {pagina}: «{t}».{extra}",
         })
     n_pos = int(persona.get("reacciones_pos") or persona.get("likes") or 0)
     n_neg = int(persona.get("reacciones_neg") or 0)
     reacciones = persona.get("reacciones") if isinstance(persona.get("reacciones"), list) else _partir(persona.get("reacciones"))
-    if n_pos or n_neg:
+    if not reacciones:
+        if n_neg:
+            reacciones = ["Me enoja"]
+        elif n_pos:
+            reacciones = ["Me gusta"]
+    if reacciones:
+        hechos.append({
+            "categoria": "Reaccion",
+            "titulo": "Reaccion",
+            "contenido": f"En {pagina} reaccionó con: {', '.join(reacciones)}.",
+        })
+    elif n_pos or n_neg:
         partes = []
         if n_pos:
             partes.append(f"{n_pos} reacción(es) positiva(s)")
         if n_neg:
             partes.append(f"{n_neg} reacción(es) negativa(s)")
-        if reacciones:
-            partes.append("Detalle: " + ", ".join(reacciones[:8]))
         hechos.append({
             "categoria": "Reaccion",
             "titulo": "Reaccion",
@@ -468,27 +577,40 @@ def hechos_de_interactuante(persona, pagina_nombre=""):
 
 
 def persona_publica(p):
+    nombre = p.get("nombre") or ""
     textos = p.get("textos") if isinstance(p.get("textos"), list) else _partir(p.get("textos"))
+    textos = [t for t in textos if not _texto_es_el_nombre(t, nombre)]
     pubs = p.get("publicaciones") if isinstance(p.get("publicaciones"), list) else _partir(p.get("publicaciones"))
+    reacciones = p.get("reacciones") if isinstance(p.get("reacciones"), list) else _partir(p.get("reacciones"))
+    limpio = {
+        **p,
+        "nombre": nombre,
+        "perfil": p.get("perfil") or "",
+        "textos": textos,
+        "reacciones": reacciones,
+        "publicaciones": pubs,
+    }
     return {
-        "nombre": p.get("nombre") or "",
+        "nombre": nombre,
         "perfil": p.get("perfil") or "",
         "likes": int(p.get("likes") or 0),
         "comentarios": int(p.get("comentarios") or 0),
         "compartidos": int(p.get("compartidos") or 0),
         "reacciones_pos": int(p.get("reacciones_pos") or p.get("likes") or 0),
         "reacciones_neg": int(p.get("reacciones_neg") or 0),
-        "reacciones": p.get("reacciones") if isinstance(p.get("reacciones"), list) else _partir(p.get("reacciones")),
+        "reacciones": reacciones,
         "textos": textos,
         "publicaciones": pubs,
         "ficha": p.get("ficha") or "",
         "contacto": p.get("contacto") or "",
-        "acercamiento": p.get("acercamiento") or "",
+        "acercamiento": acercamiento(limpio, p.get("pagina_nombre") or ""),
         "pagina_url": p.get("pagina_url") or p.get("pagina") or "",
         "pagina_nombre": p.get("pagina_nombre") or "",
         "fecha_actualizacion": str(p.get("fecha_actualizacion") or ""),
         "id": p.get("id"),
         "nueva": bool(p.get("nueva")),
+        "ubicacion": (p.get("ubicacion") or "") or "",
+        "de_colombia": es_de_colombia(limpio) is True,
     }
 
 
@@ -504,11 +626,11 @@ def asegurar_tabla():
         conn.close()
 
 
-def _persistir_comentarios_contenido(personas):
-    """Los comentarios de interactuantes también van a Revisión contenido."""
-    from app.contenido import acotar
+def _persistir_comentarios_contenido(personas, pagina_nombre=""):
+    """Los comentarios y reacciones de interactuantes van a Revisión contenido."""
     from app.ingesta_linkedin import _guardar_publicacion, asegurar_tabla as asegurar_pubs
 
+    pagina = pagina_nombre or "la página"
     asegurar_pubs()
     for p in personas or []:
         perfil = p.get("perfil") or ""
@@ -516,20 +638,33 @@ def _persistir_comentarios_contenido(personas):
             continue
         nombre = (p.get("nombre") or perfil.rsplit("/", 1)[-1])[:180]
         textos = p.get("textos") if isinstance(p.get("textos"), list) else _partir(p.get("textos"))
+        reacciones = p.get("reacciones") if isinstance(p.get("reacciones"), list) else _partir(p.get("reacciones"))
         quien = {"nombre": nombre, "clave_cliente": None}
         for t in textos:
+            t = str(t or "").strip()
             if not t:
                 continue
             _guardar_publicacion(quien, perfil, {
-                "texto": acotar(t, 280),
+                "texto": t,
                 "tipo": "comentario",
                 "url_publicacion": perfil,
-                "resumen": f"Comentó: {acotar(t, 140)}",
+                "resumen": t,
+            }, red="facebook")
+        for r in reacciones:
+            r = str(r or "").strip()
+            if not r:
+                continue
+            _guardar_publicacion(quien, perfil, {
+                "texto": f"Reaccionó con {r} en {pagina}.",
+                "tipo": "reaccion",
+                "url_publicacion": perfil,
+                "resumen": r,
             }, red="facebook")
 
 
 def persistir(pagina_url, pagina_nombre, personas):
     """Guarda o actualiza interactuantes. Devuelve cuántos se escribieron."""
+    personas = [p for p in (personas or []) if es_relevante_colombia(p)]
     asegurar_tabla()
     conn = get_connection()
     n = 0
@@ -597,7 +732,7 @@ def persistir(pagina_url, pagina_nombre, personas):
     finally:
         conn.close()
     _persistir_hechos(personas, pagina_nombre)
-    _persistir_comentarios_contenido(personas)
+    _persistir_comentarios_contenido(personas, pagina_nombre)
     return n
 
 
@@ -612,12 +747,14 @@ def _persistir_hechos(personas, pagina_nombre):
         if not perfil:
             continue
         hechos = hechos_de_interactuante(p, pagina_nombre)
-        extra = p.get("info")
-        if isinstance(extra, dict) and extra:
-            hechos.extend(hechos_desde_info(extra))
-        elif p.get("ficha"):
+        extra = p.get("info") if isinstance(p.get("info"), dict) else {}
+        if not extra and p.get("ficha"):
             from facebook_activity_scraper import parsear_ficha_facebook
-            hechos.extend(hechos_desde_info(parsear_ficha_facebook(p.get("ficha"))))
+            extra = parsear_ficha_facebook(p.get("ficha")) or {}
+        textos = p.get("textos") if isinstance(p.get("textos"), list) else _partir(p.get("textos"))
+        posts = [{"tipo": "publicacion", "texto": t} for t in textos if t]
+        if extra or posts:
+            hechos.extend(hechos_desde_info(extra, posts, incluir_red=False))
         if not hechos:
             continue
         nombre = (p.get("nombre") or perfil.rsplit("/", 1)[-1])[:180]
@@ -628,9 +765,9 @@ def _persistir_hechos(personas, pagina_nombre):
             pass
 
 
-def listar(pagina_url=None, limite=2000):
+def listar(pagina_url=None, limite=5000):
     asegurar_tabla()
-    limite = min(max(int(limite or 2000), 1), 5000)
+    limite = min(max(int(limite or 5000), 1), 5000)
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -652,7 +789,8 @@ def listar(pagina_url=None, limite=2000):
                                ORDER BY fecha_actualizacion DESC, comentarios DESC, compartidos DESC, likes DESC
                                LIMIT %s""", (limite,))
             cols = [d[0] for d in cur.description]
-            return [persona_publica(dict(zip(cols, r))) for r in cur.fetchall()]
+            return [persona_publica(dict(zip(cols, r))) for r in cur.fetchall()
+                    if es_relevante_colombia(dict(zip(cols, r)))]
     finally:
         conn.close()
 
@@ -733,6 +871,37 @@ def listar_recopilar():
         conn.close()
 
 
+def pasar_otras_redes_hechos_a_urls():
+    """Saca de Revisión de hechos los 'Otra red' y los deja en URLs perfiles."""
+    from app.perfil_redes import _URL_EN_TEXTO
+    asegurar_tabla()
+    conn = get_connection()
+    n = 0
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT nombre, contenido FROM public.hechos_perfil
+                           WHERE categoria = 'Otra red'""")
+            filas = list(cur.fetchall() or [])
+        for nombre, contenido in filas:
+            origen = f"encontrado en {nombre}"[:80] if nombre else "otra red"
+            for m in _URL_EN_TEXTO.finditer(contenido or ""):
+                if agregar_recopilar(m.group(0).rstrip(".,);'\""), origen=origen):
+                    n += 1
+        if filas:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM public.hechos_perfil WHERE categoria = 'Otra red'")
+            conn.commit()
+        return n
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return n
+    finally:
+        conn.close()
+
+
 def agregar_recopilar(url, nombre="", origen=""):
     from app.perfil_redes import clasificar_url
     hallado = clasificar_url(url)
@@ -768,6 +937,40 @@ def quitar_recopilar(url):
         return n > 0
     finally:
         conn.close()
+
+
+def quitar_interactuante(persona_url, pagina_url=None):
+    """Quita a una persona de la lista de URLs. No borra hechos ya leídos."""
+    url = (persona_url or "").strip()
+    if not url:
+        return False
+    asegurar_tabla()
+    n = 0
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            if pagina_url:
+                cur.execute(
+                    "DELETE FROM public.interactuantes_pagina WHERE persona_url = %s AND pagina_url = %s",
+                    (url, pagina_url))
+            else:
+                cur.execute(
+                    "DELETE FROM public.interactuantes_pagina WHERE persona_url = %s", (url,))
+            n += cur.rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    if quitar_recopilar(url):
+        n += 1
+    return n > 0
+
+
+def listar_posibles():
+    """Personas leídas en páginas de seguros (MAPFRE y las demás). Solo Colombia."""
+    personas = listar(None, limite=5000)
+    for p in personas:
+        p["origen"] = p.get("pagina_nombre") or "página de seguros"
+    return personas
 
 
 def pasar_interactuantes_a_recopilar(pagina_url=None):

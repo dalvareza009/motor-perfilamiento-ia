@@ -12,11 +12,11 @@ COOKIES = Path(r"c:\Users\daniela.alvarez\Downloads\vercel.com_cookies.json")
 SKIP_DIR = {
     ".venv", ".git", ".cursor", ".vercel", "__pycache__", "agent-transcripts",
     "chrome_linkedin_profile", "chrome_facebook_profile", "chrome_instagram_profile",
-    "chrome_x_profile", "node_modules",
+    "chrome_x_profile", "chrome_substack_profile", "chrome_reddit_profile", "node_modules",
 }
 SKIP_FILE = {
     ".env", "x_cookies.json", "linkedin_cookies.json", "facebook_cookies.json",
-    "instagram_cookies.json", "_vercel_token.py",
+    "instagram_cookies.json", "substack_cookies.json", "reddit_cookies.json", "_vercel_token.py",
 }
 SKIP_SUF = {".pyc", ".csv", ".pdb"}
 MAX_BYTES = 8 * 1024 * 1024
