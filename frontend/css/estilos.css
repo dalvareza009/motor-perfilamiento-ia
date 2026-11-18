@@ -293,6 +293,25 @@ a.kpi:hover { border-color: var(--primary); }
 
 /* ------------------------------------------------------------ tablas */
 .tabla-envoltura { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.lista-scroll {
+  max-height: min(68vh, 780px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) var(--surface-2);
+}
+.lista-scroll::-webkit-scrollbar { width: 10px; }
+.lista-scroll::-webkit-scrollbar-track { background: var(--surface-2); border-radius: 999px; }
+.lista-scroll::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 999px; }
+.comentario-cita {
+  border-left: 3px solid var(--primary);
+  padding: 6px 10px;
+  background: var(--surface-2);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.comentario-cita.pos { border-left-color: var(--ok); }
+.comentario-cita.neg { border-left-color: var(--danger); }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
 th { background: var(--surface-2); font-size: 12px; font-weight: 650; color: var(--text-2); position: sticky; top: 0; white-space: nowrap; }
@@ -396,6 +415,16 @@ details > summary { cursor: pointer; color: var(--text-2); font-weight: 550; use
 .item-cab { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 4px; }
 .item-cab strong { margin-right: 4px; }
 .item-texto { white-space: pre-wrap; color: var(--text-2); }
+.fotos-pub { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.foto-pub {
+  width: 120px; height: 120px; object-fit: cover; border-radius: var(--radius-sm);
+  border: 1px solid var(--border); cursor: zoom-in; background: var(--surface-2);
+}
+.foto-fondo {
+  position: fixed; inset: 0; background: rgba(10, 18, 32, 0.82); display: flex;
+  align-items: center; justify-content: center; z-index: 80; cursor: zoom-out; padding: 24px;
+}
+.foto-grande { max-width: min(92vw, 960px); max-height: 88vh; border-radius: 8px; box-shadow: 0 12px 40px rgba(0,0,0,.35); }
 .item-texto.recortado { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 .barra-acciones {
   display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 10px 12px; border-radius: var(--radius-sm);

@@ -5,3 +5,5 @@ firecrawl-py
 fastapi
 uvicorn[standard]
 selenium
+pillow
+rapidocr-onnxruntime

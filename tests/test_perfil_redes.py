@@ -1,6 +1,6 @@
 """Pruebas de perfiles públicos autorizados.  Ejecutar:  python -m tests.test_perfil_redes"""
 from app.perfil_redes import (cargar_autorizados, categorias_oracion, ciudad_usable, clasificar_url,
-                              quitar_fechas_iso,
+                              quitar_fechas_iso, nombre_de_perfil, nombre_desde_slug,
                               contactos_de_ficha, contactos_de_texto, datos_para_cliente, es_muro_de_acceso,
                               es_perfil_privado, ficha_vacia, hechos_de_perfil, hechos_desde_ficha,
                               markdown_desde_ficha, sugerir_productos)
@@ -44,6 +44,12 @@ def test_solo_acepta_la_pagina_del_perfil():
     assert clasificar_url("https://www.instagram.com/dani/?hl=es")[1] == "https://www.instagram.com/dani/"
     assert clasificar_url("https://x.com/dani")[0] == "x"
     assert clasificar_url("https://www.tiktok.com/@dani")[0] == "tiktok"
+    assert clasificar_url("https://substack.com/@dani")[1] == "https://substack.com/@dani"
+    assert clasificar_url("https://dani.substack.com/p/hola")[1] == "https://dani.substack.com/"
+    assert clasificar_url("https://www.reddit.com/user/ana_g/")[1] == "https://www.reddit.com/user/ana_g/"
+    assert clasificar_url("https://old.reddit.com/u/ana_g/comments")[1] == "https://www.reddit.com/user/ana_g/"
+    assert clasificar_url("https://www.reddit.com/r/colombia/") is None
+    assert clasificar_url("https://www.reddit.com/") is None
     assert clasificar_url("https://www.linkedin.com/search/results/all/?keywords=dani") is None
     assert clasificar_url("https://www.instagram.com/p/ABC123/") is None
     assert clasificar_url("https://www.facebook.com/messages/t/1") is None
@@ -80,7 +86,7 @@ def test_extrae_trabajo_estudios_familia_y_ciudad():
     assert "Estudios|" in texto and "EAFIT" in texto
     assert "Familia|" in texto and "hija" in texto
     assert "Ubicacion|" in texto and "Medellín" in texto
-    assert "Sueldo" not in texto and "correo.com" not in texto and "Python" not in texto
+    assert "correo.com" not in texto and "Python" not in texto
 
 
 def test_no_inventa_familia_por_una_frase_de_trabajo():
@@ -146,6 +152,15 @@ def test_la_ficha_si_llena_estudios_y_cargo():
     assert "EAFIT" in info["educacion"]
 
 
+def test_el_salario_publicado_queda_como_ingresos():
+    from app.perfil_redes import aplicar_lo_publicado, categorias_oracion
+    assert "Ingresos" in categorias_oracion("Me subieron el salario este año en la empresa.")
+    info = aplicar_lo_publicado({}, [
+        {"tipo": "publicacion", "texto": "Me subieron el salario este año en Global."},
+    ])
+    assert "salario" in (info.get("ingresos") or "").lower()
+
+
 def test_estudiar_no_cuenta_como_trabajo_actual():
     cats = categorias_oracion("Estudié ingeniería en la Universidad EAFIT.", "Situacion actual")
     assert cats == ["Estudios"]
@@ -157,10 +172,22 @@ def test_muro_de_acceso_no_produce_hechos():
     assert hechos_de_perfil(muro) == []
 
 
+def test_nombre_de_linkedin_no_queda_na_ni_publicacion():
+    url = "https://www.linkedin.com/in/mariana-gutierrez-jaramillo/"
+    assert nombre_desde_slug(url) == "Mariana Gutierrez Jaramillo"
+    assert nombre_de_perfil("N/A", url) == "Mariana Gutierrez Jaramillo"
+    assert nombre_de_perfil("Publicación", url) == "Mariana Gutierrez Jaramillo"
+    assert nombre_de_perfil("LinkedIn", url) == "Mariana Gutierrez Jaramillo"
+    assert nombre_de_perfil("Mariana Gutiérrez Jaramillo | LinkedIn", url) == "Mariana Gutiérrez Jaramillo"
+    assert nombre_de_perfil("Mariana Gutiérrez Jaramillo", url) == "Mariana Gutiérrez Jaramillo"
+
+
 def test_decodifica_el_slug_de_linkedin():
     red, url = clasificar_url("https://www.linkedin.com/in/daniela-%C3%A1lvarez-acevedo-091984380/")
     assert red == "linkedin"
-    assert url == "https://www.linkedin.com/in/daniela-álvarez-acevedo-091984380"
+    assert url == "https://www.linkedin.com/in/daniela-%C3%A1lvarez-acevedo-091984380/"
+    red2, url2 = clasificar_url("https://co.linkedin.com/in/daniela-álvarez-acevedo-091984380/recent-activity/all/")
+    assert red2 == "linkedin" and url2 == url
 
 
 def test_la_ficha_trae_trabajo_estudios_y_bio_sin_contacto():
@@ -346,10 +373,12 @@ def test_lote_acepta_urls_sin_estar_en_el_archivo():
     objetivos, avisos = objetivos_desde_urls([
         "https://www.instagram.com/ana/",
         "https://x.com/ana",
+        "https://substack.com/@ana",
+        "https://www.reddit.com/user/ana",
         "no-es-url",
         "https://www.instagram.com/ana/",
     ], data=[])
-    assert [p[1]["red"] for p in objetivos] == ["instagram", "x"]
+    assert [p[1]["red"] for p in objetivos] == ["instagram", "x", "substack", "reddit"]
     assert objetivos[0][0]["nombre"] == ""
     assert any("no reconocida" in a for a in avisos)
 

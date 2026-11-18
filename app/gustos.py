@@ -187,6 +187,9 @@ def senales(info, posts=None):
             post.get("autor") or "",
             post.get("texto") or "",
             post.get("contexto_social") or "",
+            post.get("texto_imagen") or "",
+            post.get("descripcion_imagen") or "",
+            " ".join(a for a in (post.get("alts") or []) if isinstance(a, str)),
         ]))
         cats = clasificar(texto)
         autor = (post.get("autor") or "").strip()

@@ -65,7 +65,9 @@ except Exception:  # el script copiado fuera del proyecto sigue extrayendo, sin 
     evaluar_publicacion = None
     menciona_salario = lambda texto: False
 
-from app.redes_seguidas import tope_publicaciones
+from app.redes_seguidas import (
+    es_404_linkedin, ruta_linkedin_rota, tope_publicaciones,
+)
 
 # Marcas de que LinkedIn NO te está dejando pasar con la sesión actual.
 MARCAS_MURO = ("/login", "/uas/login", "/signup", "/checkpoint", "authwall")
@@ -449,9 +451,9 @@ class LinkedInActivityScraper:
             (By.XPATH, "//section[.//div[@data-urn]]"),
             (By.XPATH, "//main"),
         ]
-        for by, xpath in intentos:
+        for i, (by, xpath) in enumerate(intentos):
             try:
-                contenedor = WebDriverWait(self.driver, 8).until(
+                contenedor = WebDriverWait(self.driver, 2.0 if i == 0 else 0.5).until(
                     EC.presence_of_element_located((by, xpath))
                 )
                 print(f"  ✔ Contenedor localizado con: {xpath[:60]}...")
@@ -486,7 +488,7 @@ class LinkedInActivityScraper:
     def scroll_progresivo(self, n_scrolls=3, px=800):
         for _ in range(n_scrolls):
             self.driver.execute_script(f"window.scrollBy(0, {px});")
-            time.sleep(self.gaussian_delay(1.5, 0.5))
+            time.sleep(0.4)
 
     # ---------- Extracción de una publicación ----------
     _LINEAS_UI = {"ver más", "see more", "… más", "... más", "ver menos", "see less",
@@ -629,7 +631,7 @@ class LinkedInActivityScraper:
                     return linea.strip()
         except Exception:
             pass
-        return "N/A"
+        return ""
 
     @staticmethod
     def _urn_de_href(href):
@@ -678,24 +680,138 @@ class LinkedInActivityScraper:
         return vigentes
 
     # ---------- Ficha del perfil (se lee ANTES que las publicaciones) ----------
+    def _es_404(self):
+        try:
+            url = self.driver.current_url or ""
+            titulo = self.driver.title or ""
+            encabezado = ""
+            try:
+                encabezado = (self.driver.find_element(By.CSS_SELECTOR, "main h1, h1").text or "")
+            except Exception:
+                pass
+            cuerpo = ""
+            try:
+                cuerpo = self.driver.find_element(By.TAG_NAME, "body").text or ""
+            except Exception:
+                pass
+            hay_perfil = False
+            for h1 in self.driver.find_elements(By.CSS_SELECTOR, "main h1, h1")[:6]:
+                t = (h1.text or "").strip()
+                if len(t) >= 2 and not es_404_linkedin(encabezado=t):
+                    hay_perfil = True
+                    break
+        except Exception:
+            return False
+        return es_404_linkedin(url, titulo, encabezado, cuerpo, hay_perfil)
+
+    def _volver_al_perfil(self, profile_url):
+        if not profile_url or ruta_linkedin_rota(profile_url):
+            return False
+        try:
+            self.driver.get(profile_url)
+            time.sleep(0.6)
+            self._esperar_perfil_o_404(4)
+            return not self._es_404()
+        except Exception as e:
+            print(f"  ⚠ No se pudo volver al perfil: {e}")
+            return False
+
+    def _esperar_perfil_o_404(self, segundos=4):
+        def listo(d):
+            try:
+                if self._es_muro() or self._es_404():
+                    return True
+                if d.find_elements(By.CSS_SELECTOR, "main h1, h1.text-heading-xlarge, h1"):
+                    return True
+                main = d.find_elements(By.TAG_NAME, "main")
+                return bool(main and len((main[0].text or "")) > 40)
+            except Exception:
+                return False
+        try:
+            WebDriverWait(self.driver, segundos).until(listo)
+        except TimeoutException:
+            pass
+
+    def _canon_perfil(self, url):
+        from urllib.parse import urlparse
+        from app.perfil_redes import clasificar_url
+        hallada = clasificar_url(url or "")
+        if hallada and hallada[0] == "linkedin":
+            host = (urlparse(url or "").hostname or "www.linkedin.com").lower()
+            slug = [s for s in urlparse(hallada[1]).path.split("/") if s]
+            slug = slug[1] if len(slug) >= 2 else ""
+            if host.endswith(".linkedin.com") and host not in {"linkedin.com", "www.linkedin.com"} and slug:
+                return f"https://{host}/in/{slug}/"
+            return hallada[1] if hallada[1].endswith("/") else hallada[1] + "/"
+        u = (url or "").split("?")[0].split("#")[0]
+        if u and not u.endswith("/"):
+            u += "/"
+        return u
+
+    def _variantes_perfil(self, profile_url):
+        from urllib.parse import quote, unquote, urlparse
+        base = self._canon_perfil(profile_url)
+        partes = [s for s in urlparse(base).path.split("/") if s]
+        slug = partes[1] if len(partes) >= 2 else ""
+        slugs = []
+        for s in (slug, unquote(slug), quote(unquote(slug), safe="-._~")):
+            if s and s not in slugs:
+                slugs.append(s)
+        urls = []
+        if base and not ruta_linkedin_rota(base):
+            urls.append(base)
+        for s in slugs:
+            for host in ("www.linkedin.com", "co.linkedin.com"):
+                cand = f"https://{host}/in/{s}/"
+                if cand not in urls:
+                    urls.append(cand)
+        return urls
+
+    def _abrir_linkedin(self, url, contexto="", volver_si_falla=None):
+        if ruta_linkedin_rota(url):
+            print(f"  Se omite una ruta que LinkedIn responde con 404: {url}")
+            return False
+        print(f"  → {url}")
+        try:
+            self.driver.get(url)
+        except Exception as e:
+            print(f"  ⚠ Chrome no pudo abrir esa URL: {e}")
+            if volver_si_falla:
+                self._volver_al_perfil(volver_si_falla)
+            return False
+        time.sleep(0.7)
+        self._esperar_perfil_o_404(4)
+        if not self.asegurar_sesion(url, contexto=contexto or url):
+            return False
+        if self._es_404():
+            print("  ⚠ LinkedIn dice que esa página no existe; se vuelve al perfil.")
+            if volver_si_falla:
+                self._volver_al_perfil(volver_si_falla)
+            return False
+        return True
+
     def extraer_informacion_perfil(self, profile_url):
         """Nombre, titular, ubicación y secciones Acerca/Experiencia/Educación."""
-        if not profile_url.endswith('/'):
-            profile_url += '/'
         print(f"\n👤 Leyendo primero la ficha del perfil: {profile_url}")
-        self.driver.get(profile_url)
-        time.sleep(self.gaussian_delay(4, 1.5))
-        if not self.asegurar_sesion(profile_url, contexto=profile_url):
-            return {}
+        abierta = None
+        for cand in self._variantes_perfil(profile_url):
+            if self._abrir_linkedin(cand, contexto=cand):
+                abierta = self._canon_perfil(self.driver.current_url or cand)
+                if ruta_linkedin_rota(abierta) or self._es_404():
+                    abierta = None
+                    continue
+                break
+        if not abierta:
+            print("  ⚠ No se abrió el perfil de LinkedIn (¿URL o sesión?).")
+            return {"perfil": profile_url, "nombre": ""}
+        profile_url = abierta
         expandir_ver_mas(self.driver)
-        self.scroll_progresivo(n_scrolls=2, px=700)
+        self.scroll_progresivo(n_scrolls=1, px=700)
+        self._expandir_secciones_en_ficha(profile_url)
 
         info = {"perfil": profile_url, "nombre": "", "titular": "", "ubicacion": "",
                 "acerca": "", "experiencia": "", "educacion": "", "seguidores": ""}
-        try:
-            info["nombre"] = self.driver.find_element(By.TAG_NAME, "h1").text.strip().splitlines()[0][:120]
-        except Exception:
-            pass
+        info["nombre"] = self._leer_nombre_perfil(profile_url)
         for sel in ("div.text-body-medium.break-words", "div[class*='headline']"):
             try:
                 txt = self.driver.find_element(By.CSS_SELECTOR, sel).text.strip()
@@ -726,12 +842,6 @@ class LinkedInActivityScraper:
             m = re.search(r"([\d.,]+)\s*(?:seguidores|followers)", cuerpo, re.I)
             if m:
                 info["seguidores"] = m.group(1)
-            # Respaldo SDUI: si h1/titular no aparecieron, salen del título de
-            # la pestaña («Nombre | LinkedIn») y de la línea siguiente al nombre.
-            if not info["nombre"]:
-                titulo = (self.driver.title or "").split("|")[0].strip()
-                if titulo and "linkedin" not in titulo.lower():
-                    info["nombre"] = titulo[:120]
             if info["nombre"] and not info["titular"]:
                 lineas = [l.strip() for l in cuerpo.splitlines() if l.strip()]
                 for i, linea in enumerate(lineas):
@@ -742,68 +852,132 @@ class LinkedInActivityScraper:
                         break
         except Exception:
             pass
-        # Experiencia/Educación no siempre se renderizan en la portada del
-        # perfil: LinkedIn las sirve completas en sus subpáginas /details/…
-        for destino, ruta in (("experiencia", "details/experience/"),
-                              ("educacion", "details/education/")):
-            if info[destino]:
-                continue
-            try:
-                self.driver.get(profile_url + ruta)
-                time.sleep(self.gaussian_delay(2.5, 0.8))
-                principal = self.driver.find_element(By.TAG_NAME, "main").text
-                if len(principal) > 60:
-                    info[destino] = self._limpiar_texto(principal, limite=1500)
-            except Exception:
-                continue
+        from app.perfil_redes import nombre_de_perfil
+        info["nombre"] = nombre_de_perfil(info.get("nombre"), profile_url)
         if info.get("acerca") and not info.get("bio"):
             info["bio"] = info["acerca"][:400]
-        info = extraer_red_de(self.driver, "linkedin", profile_url, info)
+        info["perfil"] = profile_url
+        try:
+            info = extraer_red_de(self.driver, "linkedin", profile_url, info)
+        except Exception as e:
+            print(f"  ⚠ No se leyeron intereses de LinkedIn: {e}")
+            self._volver_al_perfil(profile_url)
+        if self._es_404():
+            self._volver_al_perfil(profile_url)
         from app.perfil_redes import quitar_fechas_iso
         for clave, valor in list(info.items()):
             if isinstance(valor, str) and valor and clave != "perfil":
                 info[clave] = quitar_fechas_iso(valor)
         self.info_perfil[profile_url] = info
+        self.info_perfil[self._canon_perfil(profile_url)] = info
         print(f"  ✔ {info['nombre'] or 'Perfil'} · {(info.get('titular') or '')[:70]}")
         if info.get("resumen_red"):
             print(f"  · {info['resumen_red']}")
         return info
 
+    def _expandir_secciones_en_ficha(self, profile_url=""):
+        """Abre 'mostrar todos los puestos/estudios' SIN ir a /details/interests/…"""
+        script = """
+        const claves = arguments[0];
+        const rota = /\\/details\\/interests\\/(companies|groups|schools|influencers|newsletters|top-voices)/;
+        for (const el of document.querySelectorAll('a, button, div[role="button"]')) {
+          const href = (el.getAttribute('href') || '').toLowerCase();
+          if (rota.test(href)) continue;
+          const t = (el.innerText || '').trim().toLowerCase().replace(/\\s+/g, ' ');
+          if (!t || t.length > 90) continue;
+          if (claves.some(c => t.includes(c))) { el.click(); return t; }
+        }
+        return '';
+        """
+        claves = [
+            "mostrar todos los puestos", "show all experiences", "mostrar todas las experiencias",
+            "mostrar toda la formación", "show all education", "mostrar todos los estudios",
+            "mostrar más información", "show more about",
+        ]
+        try:
+            pulsado = self.driver.execute_script(script, claves)
+            if pulsado:
+                time.sleep(1.2)
+                if self._es_404():
+                    print("  ⚠ Una sección de la ficha no existe; se ignora.")
+                    self._volver_al_perfil(profile_url)
+        except Exception:
+            pass
+
+    def _leer_nombre_perfil(self, profile_url=""):
+        """Nombre real del h1 / og:title. Nunca N/A ni 'Publicación'."""
+        from app.perfil_redes import nombre_de_perfil
+        script = """
+        const cand = [];
+        const push = t => { t = (t || '').trim().split('\\n')[0]; if (t) cand.push(t); };
+        for (const h of document.querySelectorAll('main h1, h1.text-heading-xlarge, h1.inline, h1')) push(h.innerText);
+        const og = document.querySelector('meta[property="og:title"]');
+        if (og) push(og.getAttribute('content'));
+        push(document.title);
+        return cand;
+        """
+        try:
+            for crudo in (self.driver.execute_script(script) or []):
+                n = nombre_de_perfil(crudo, "")
+                if n:
+                    return n
+        except Exception:
+            pass
+        return nombre_de_perfil("", profile_url)
+
     # ---------- Flujo principal de extracción ----------
     def extraer_publicaciones_perfil(self, profile_url, max_posts=10):
         max_posts = tope_publicaciones(max_posts)
-        if not profile_url.endswith('/'):
-            profile_url += '/'
+        profile_url = self._canon_perfil(profile_url)
         publicaciones, vistos = [], set()
-        for sufijo in ("recent-activity/reposts/", "recent-activity/all/"):
+        sufijos = (
+            "recent-activity/all/",
+            "recent-activity/shares/",
+        )
+        for sufijo in sufijos:
             activity_url = profile_url + sufijo
-            print(f"\n📄 Visitando: {activity_url}")
-            self.driver.get(activity_url)
-            time.sleep(self.gaussian_delay(4, 1.5))
-            if not self.asegurar_sesion(activity_url, contexto=activity_url):
-                print("  ⚠ Sin sesión tras el intento manual: se salta este perfil, "
-                      "pero el navegador sigue abierto.")
-                if sufijo.endswith("reposts/"):
-                    continue
-                return publicaciones[:max_posts] if publicaciones else []
+            print(f"\n📄 Visitando: {activity_url or profile_url}")
+            if not self._abrir_linkedin(activity_url, contexto=activity_url,
+                                        volver_si_falla=profile_url):
+                print("  ⚠ Ruta de actividad no disponible; se prueba la siguiente.")
+                continue
+            if not sufijo:
+                try:
+                    self.driver.execute_script("""
+                        const claves = ['mostrar toda la actividad', 'see all activity',
+                                        'ver toda la actividad', 'show all activity',
+                                        'ver más actividad', 'see more activity'];
+                        for (const el of document.querySelectorAll('a, button, div[role="button"]')) {
+                          const t = (el.innerText || '').trim().toLowerCase();
+                          if (claves.some(c => t.includes(c))) { el.click(); return t; }
+                        }
+                        return '';
+                    """)
+                    time.sleep(self.gaussian_delay(2, 0.6))
+                except Exception:
+                    pass
             try:
                 texto_pagina = self.driver.find_element(By.TAG_NAME, "body").text.lower()
             except Exception:
                 texto_pagina = ""
+            if self._es_404():
+                print("  ⚠ LinkedIn no reconoce esa ruta de actividad.")
+                self._volver_al_perfil(profile_url)
+                continue
             if any(f in texto_pagina for f in ("no hay actividad en este momento",
                                                "no recent activity", "nothing to see here")):
                 print("  ℹ LinkedIn no muestra actividad en este apartado.")
                 continue
             contenedor = self.obtener_contenedor_publicaciones() or self.driver
             try:
-                WebDriverWait(self.driver, 10).until(lambda d: d.find_elements(
+                WebDriverWait(self.driver, 4).until(lambda d: d.find_elements(
                     By.CSS_SELECTOR,
                     "[data-testid='expandable-text-box'], [data-urn], "
                     "div[role='listitem'][componentkey^='update-card']"))
             except TimeoutException:
                 pass
             tope = max_posts * 2
-            for ronda in range(4):
+            for ronda in range(3):
                 posts = self.obtener_publicaciones(contenedor)
                 for post in posts:
                     try:
@@ -832,6 +1006,9 @@ class LinkedInActivityScraper:
                                          if (im.size or {}).get("width", 0) > 60])
                         except Exception:
                             n_img = 0
+                        from app.imagenes_pub import capturar
+                        fotos = capturar(post)
+                        n_img = max(n_img, len(fotos))
                         publicaciones.append({
                             'perfil': profile_url,
                             'urn': urn,
@@ -842,6 +1019,7 @@ class LinkedInActivityScraper:
                             'autor': self.extraer_autor(post),
                             'texto': texto,
                             'tiempo': self.extraer_tiempo_publicacion(post),
+                            'imagenes': fotos,
                             'n_imagenes': n_img,
                             'tiene_imagenes': n_img > 0,
                             'hashtags': ";".join(self.extraer_hashtags(texto)),
@@ -861,6 +1039,8 @@ class LinkedInActivityScraper:
                 self.scroll_progresivo(n_scrolls=1)
                 if self._es_muro() and not self.asegurar_sesion(activity_url, contexto=activity_url):
                     break
+            if len(publicaciones) >= max_posts:
+                break
 
         vigentes = self.filtrar_y_ordenar(publicaciones)
         from app.redes_seguidas import aplicar_a_info
@@ -927,7 +1107,12 @@ class LinkedInActivityScraper:
         #    (propias recientes primero). Relevancia = tema del catálogo +
         #    autoría + recencia; sin tema, la publicación no construye perfil.
         for post in publicaciones:
-            evaluacion = evaluar_publicacion(post.get("texto", ""))
+            mezcla = " ".join(p for p in (
+                post.get("texto") or "",
+                post.get("texto_imagen") or "",
+                post.get("descripcion_imagen") or "",
+            ) if p).strip()
+            evaluacion = evaluar_publicacion(mezcla or post.get("texto", ""))
             if evaluacion["omitida"]:
                 self.omitidas_sensibles[evaluacion["motivo"]] += 1
                 continue

@@ -69,6 +69,7 @@ ALTER TABLE public.publicaciones_linkedin ADD COLUMN IF NOT EXISTS tipo TEXT NOT
 ALTER TABLE public.publicaciones_linkedin ADD COLUMN IF NOT EXISTS resumen TEXT NOT NULL DEFAULT '';
 ALTER TABLE public.publicaciones_linkedin ADD COLUMN IF NOT EXISTS tiene_imagenes BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE public.publicaciones_linkedin ADD COLUMN IF NOT EXISTS n_imagenes INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE public.publicaciones_linkedin ADD COLUMN IF NOT EXISTS imagenes TEXT NOT NULL DEFAULT '[]';
 """
 
 
@@ -152,26 +153,36 @@ def _html_publico(driver, url):
 
 def _guardar_publicacion(persona, url, post, red="linkedin"):
     """-> id_publicacion. None si ese texto ya estaba guardado para esa URL."""
+    from app.imagenes_pub import dump as dump_imagenes, parsear as parsear_imagenes
+
     h = hashlib.sha256(post["texto"].encode("utf-8")).hexdigest()
+    fotos = parsear_imagenes(post.get("imagenes"))
+    n_img = max(int(post.get("n_imagenes") or 0), len(fotos))
+    tiene = bool(post.get("tiene_imagenes") or fotos)
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("""SELECT id_publicacion FROM public.publicaciones_linkedin
+            cur.execute("""SELECT id_publicacion, COALESCE(imagenes, '[]') FROM public.publicaciones_linkedin
                            WHERE fuente_url = %s AND hash_contenido = %s""", (url, h))
             fila = cur.fetchone()
             if fila:
+                if fotos and not parsear_imagenes(fila[1]):
+                    cur.execute("""UPDATE public.publicaciones_linkedin
+                                   SET imagenes = %s, tiene_imagenes = TRUE, n_imagenes = %s
+                                   WHERE id_publicacion = %s""",
+                                (dump_imagenes(fotos), n_img or len(fotos), fila[0]))
+                    conn.commit()
                 return fila[0], False
             cur.execute("""INSERT INTO public.publicaciones_linkedin
                            (clave_cliente, nombre, fuente_url, urn, texto, tiempo, hash_contenido, red,
-                            url_publicacion, tipo, resumen, tiene_imagenes, n_imagenes)
-                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id_publicacion""",
+                            url_publicacion, tipo, resumen, tiene_imagenes, n_imagenes, imagenes)
+                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id_publicacion""",
                         (persona.get("clave_cliente"), persona["nombre"], url,
                          post.get("urn") or None, post["texto"], post.get("tiempo") or None, h, red,
                          (post.get("url_publicacion") or post.get("url") or "")[:500],
                          (post.get("tipo") or "publicacion")[:40],
                          (post.get("resumen") or "")[:500],
-                         bool(post.get("tiene_imagenes")),
-                         int(post.get("n_imagenes") or 0)))
+                         tiene, n_img, dump_imagenes(fotos)))
             nuevo = cur.fetchone()[0]
         conn.commit()
         return nuevo, True

@@ -6,8 +6,11 @@ import os
 from app import embeddings
 from app.database import get_connection
 
-PRIORIDAD = {"regla de negocio": 0, "producto": 1, "cobertura": 2, "beneficio": 3, "pregunta frecuente": 4,
-             "clausulado": 5, "exclusion": 5, "exclusión": 5}
+PRIORIDAD = {"regla de negocio": 0, "perfil de cliente": 0, "producto": 1, "cobertura": 2,
+             "beneficio": 3, "pregunta frecuente": 4, "clausulado": 5, "exclusion": 5, "exclusión": 5,
+             "dato interno de cartera": 9}
+_SIEMPRE = ("regla de negocio", "perfil de cliente")
+_NO_MENSAJE = ("dato interno de cartera",)
 MAX_CHARS = 4000
 MIN_SIM = float(os.getenv("RAG_MIN_SIM", "0"))   # 0 = sin umbral; súbelo (p. ej. 0.4) tras probar con tus datos
 
@@ -49,21 +52,21 @@ def buscar_fragmentos(producto, consulta, k=5):
             if producto:
                 cur.execute("""SELECT categoria, titulo, contenido FROM public.conocimiento
                                WHERE activo AND LOWER(producto) = LOWER(%s)
-                                 AND LOWER(categoria) = 'regla de negocio' ORDER BY id_conocimiento""",
-                            (producto,))
+                                 AND LOWER(categoria) = ANY(%s) ORDER BY id_conocimiento""",
+                            (producto, list(_SIEMPRE)))
                 reglas = [{"categoria": c, "titulo": t, "contenido": x} for c, t, x in cur.fetchall()]
             cur.execute("""SELECT c.categoria, c.titulo, c.contenido, 1 - (e.embedding <=> %s::vector) AS sim
                            FROM public.conocimiento c
                            JOIN public.conocimiento_embeddings e USING (id_conocimiento)
-                           WHERE c.activo AND LOWER(c.categoria) <> 'regla de negocio'
+                           WHERE c.activo AND LOWER(c.categoria) <> ALL(%s)
                              AND (%s::text IS NULL OR LOWER(c.producto) = LOWER(%s))
                            ORDER BY e.embedding <=> %s::vector LIMIT %s""",
-                        (vec, producto, producto, vec, k))
+                        (vec, list(_SIEMPRE) + list(_NO_MENSAJE), producto, producto, vec, k))
             top = [{"categoria": c, "titulo": t, "contenido": x, "similitud": float(s)}
                    for c, t, x, s in cur.fetchall() if float(s) >= MIN_SIM]
     finally:
         conn.close()
-    return (reglas + top) if top else []
+    return (reglas + top) if (reglas or top) else []
 
 
 def recuperar(producto, consulta=None, k=5, max_chars=MAX_CHARS):
@@ -79,7 +82,8 @@ def recuperar(producto, consulta=None, k=5, max_chars=MAX_CHARS):
             print(f"[rag] vectorial: {len(titulos)} fragmentos -> {titulos}")
             return texto, titulos, "vectorial"
 
-    frs = _todos(producto) if producto else []
+    frs = [f for f in (_todos(producto) if producto else [])
+           if (f.get("categoria") or "").lower() not in _NO_MENSAJE]
     if not frs:
         return "No hay información disponible sobre el producto.", [], "completo"
     texto, titulos = formatear(frs, max_chars)

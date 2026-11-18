@@ -7,6 +7,10 @@ instagram_cookies.json
 chrome_instagram_profile/
 x_cookies.json
 chrome_x_profile/
+substack_cookies.json
+chrome_substack_profile/
+reddit_cookies.json
+chrome_reddit_profile/
 
 # Salida del scraper
 linkedin_activity_*.csv
@@ -22,10 +26,18 @@ instagram_resumen_*.json
 x_actividad_*.csv
 x_recomendaciones_*.csv
 x_resumen_*.json
+substack_actividad_*.csv
+substack_recomendaciones_*.csv
+substack_resumen_*.json
+reddit_actividad_*.csv
+reddit_recomendaciones_*.csv
+reddit_resumen_*.json
 
 .env
 .env.para-el-jefe
+GUIA-INSTALACION-PRIVADA.md
 datos_iniciales/base_datos.sql
+data/media_publicaciones/
 agent-transcripts/
 .cursor/
 __pycache__/
