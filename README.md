@@ -16,7 +16,7 @@ Las cifras salen de SQL. El modelo solo interpreta preguntas y redacta textos; n
 - **Conocimiento:** ingesta del sitio (Firecrawl), aprobación humana, búsqueda vectorial si hay embeddings.
 - **Perfiles públicos:** lista de personas que autorizaron por escrito; scraping con la sesión de Chrome de quien opera (incluye Substack y Reddit).
 - **Duplicados y auditoría.**
-- **Tratamiento de datos:** documentación de Selenium y Firecrawl (privacidad, retención, créditos).
+- **Cumplimiento:** documentación de Selenium y Firecrawl (privacidad, retención, créditos) en `docs/cumplimiento/`.
 
 ### Roles
 
@@ -32,7 +32,7 @@ Las cifras salen de SQL. El modelo solo interpreta preguntas y redacta textos; n
 frontend/     Interfaz (HTML/JS)
 app/          API FastAPI y reglas de negocio
 *_scraper.py  LinkedIn, X, Facebook, Instagram, Substack, Reddit (Selenium + Chrome)
-docs/         Tratamiento de datos y diagramas
+docs/         Cumplimiento, arquitectura y diagramas
 data/         Perfiles autorizados
 tests/        Pruebas
 scripts/      Arranque local y carga de base
@@ -76,7 +76,7 @@ En todas las redes se revisa, si está dicho o se ve: a quién sigue, intereses 
 
 No versionar `*.json` de cookies ni carpetas `chrome_*_profile`.
 
-## Tratamiento de datos (Selenium y Firecrawl)
+## Cumplimiento (proveedores de extracción)
 
 El motor usa dos vías distintas para obtener contenido web:
 
@@ -87,11 +87,11 @@ El motor usa dos vías distintas para obtener contenido web:
 
 Resumen operativo: un dato “público” no basta por sí solo; hace falta autorización o base legal. Los hechos se aprueban con revisión humana. Extraer en local no gasta créditos de Firecrawl.
 
-Documentación completa (privacidad, retención, entrenamiento, ZDR, precios/créditos y enlaces oficiales):
+Documentación en `docs/cumplimiento/`:
 
-- Guía del proyecto: [docs/tratamiento_datos_selenium_firecrawl.md](docs/tratamiento_datos_selenium_firecrawl.md)
-- PDF principal: [docs/Selenium_Firecrawl_Tratamiento_Datos.pdf](docs/Selenium_Firecrawl_Tratamiento_Datos.pdf)
-- Revisión adicional con fuentes: [docs/Revision_politicas_tratamiento_datos_Selenium_y_Firecrawl.pdf](docs/Revision_politicas_tratamiento_datos_Selenium_y_Firecrawl.pdf)
+- Guía: [docs/cumplimiento/guia.md](docs/cumplimiento/guia.md)
+- PDF principal: [docs/cumplimiento/proveedores-extraccion.pdf](docs/cumplimiento/proveedores-extraccion.pdf)
+- Fuentes oficiales: [docs/cumplimiento/fuentes-oficiales.pdf](docs/cumplimiento/fuentes-oficiales.pdf)
 
 ## Pruebas
 

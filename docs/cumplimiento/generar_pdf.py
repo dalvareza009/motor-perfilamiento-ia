@@ -19,9 +19,7 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-SALIDA = Path(__file__).with_name(
-    "Revision_politicas_tratamiento_datos_Selenium_y_Firecrawl.pdf"
-)
+SALIDA = Path(__file__).with_name("fuentes-oficiales.pdf")
 FECHA = date(2026, 11, 16)
 
 AZUL = colors.HexColor("#1B3A5C")
