@@ -1,6 +1,7 @@
 """Pasa la extracción con sesión (Facebook / Instagram / LinkedIn / X) a las tablas que ya usa el modelo.
 
-La ficha y los productos sugeridos van a hechos_perfil (pendientes de revisión).
+La ficha clara (trabajo, estudios, estado civil, origen, dónde vive, edad) entra aprobada.
+Lo demás, incluidos los productos sugeridos, queda pendiente de revisión.
 Las publicaciones con tema del catálogo van a publicaciones_linkedin + intereses_linkedin;
 al aprobar un interés, se copia a hechos_perfil y el modelo lo lee.
 No se escriben CSV: el asesor y los borradores leen PostgreSQL.

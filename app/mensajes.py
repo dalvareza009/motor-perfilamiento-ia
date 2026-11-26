@@ -9,7 +9,7 @@ from app import validacion
 from app.conocimiento import get_product_knowledge
 from app.database import get_connection
 from app.ollama_client import MODEL, generate_json
-from app.perfil_redes import normalizar_celular
+from app.perfil_redes import normalizar_celular, primer_nombre
 from app.segmentos import CONSENT_COLUMN
 
 VERSION_PROMPT = "v4"
@@ -113,7 +113,9 @@ def condicion_general(cliente):
 
 
 def _prompt(cliente, conocimiento, canal, errores_previos, eslogan=None):
-    nombre = cliente["nombre"].split()[0]
+    nombre = primer_nombre(cliente.get("nombre"))
+    if not nombre:
+        nombre = "Hola"
     eslogan = eslogan or random.choice(ESLOGANES)
     condicion = condicion_general(cliente)
     if condicion:

@@ -33,7 +33,7 @@ export function tarjetaResumen(r) {
     lista && lista.length ? barras(lista.map(([valor, n]) => ({ valor, n })), { total: r.total }) : h("span", { class: "muted" }, "Sin datos"));
   return h("div", { class: "pila" },
     h("div", { class: "kpis" },
-      kpi("Clientes en el grupo", num(r.total), { ico: "users" }),
+      kpi(r.etiqueta || "Clientes en el grupo", num(r.total), { ico: "users" }),
       kpi("Edad promedio", r.edad_promedio != null ? `${num(r.edad_promedio)} años` : "—", { ico: "user" })),
     h("div", { class: "grid-3" },
       top("Ciudades principales", r.top_ciudad),

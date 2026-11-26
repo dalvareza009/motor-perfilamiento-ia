@@ -180,6 +180,11 @@ def test_nombre_de_linkedin_no_queda_na_ni_publicacion():
     assert nombre_de_perfil("LinkedIn", url) == "Mariana Gutierrez Jaramillo"
     assert nombre_de_perfil("Mariana Gutiérrez Jaramillo | LinkedIn", url) == "Mariana Gutiérrez Jaramillo"
     assert nombre_de_perfil("Mariana Gutiérrez Jaramillo", url) == "Mariana Gutiérrez Jaramillo"
+    assert nombre_de_perfil("(24) Jhonnathan Ocampo Diaz | LinkedIn",
+                            "https://www.linkedin.com/in/jhonnathan-ocampo/") == "Jhonnathan Ocampo Diaz"
+    assert nombre_de_perfil("(7) Notificaciones", url) == "Mariana Gutierrez Jaramillo"
+    assert nombre_de_perfil("Feed", url) == "Mariana Gutierrez Jaramillo"
+    assert nombre_de_perfil("N/A", url) == "Mariana Gutierrez Jaramillo"
 
 
 def test_decodifica_el_slug_de_linkedin():

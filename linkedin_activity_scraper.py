@@ -359,7 +359,7 @@ class LinkedInActivityScraper:
                     return False
                 if respuesta in ("salir", "exit", "q", "quit"):
                     return False
-            self.driver.get("https://www.linkedin.com/feed/")
+            self._get("https://www.linkedin.com/feed/")
             time.sleep(self.gaussian_delay(3, 1))
             self._esperar_resolucion()
             if self.sesion_activa():
@@ -377,9 +377,13 @@ class LinkedInActivityScraper:
         options.add_argument('--window-size=1280,900')
         options.add_argument('--lang=es-ES')
         options.add_argument('--disable-notifications')
+        # LinkedIn no siempre termina de cargar. Con "eager" no se espera a
+        # cada imagen y script; si aun así se pasa del tope, se corta y se sigue.
+        options.page_load_strategy = "eager"
 
         try:
             self.driver = runtime_nube.crear_driver(options)
+            self.driver.set_page_load_timeout(20)
         except Exception as e:
             print(f"❌ Chrome no arrancó: {e}")
             print("   Suele ser porque otro Chrome está usando ese mismo "
@@ -387,7 +391,7 @@ class LinkedInActivityScraper:
             return False
 
         # 1) El perfil dedicado ya puede traer la sesión de la vez anterior.
-        self.driver.get("https://www.linkedin.com/feed/")
+        self._get("https://www.linkedin.com/feed/")
         time.sleep(self.gaussian_delay(3, 1))
         self._esperar_resolucion()
         if self.sesion_activa():
@@ -398,7 +402,7 @@ class LinkedInActivityScraper:
         # 2) Si no, se inyectan las cookies del JSON (hay que estar ya en el
         #    dominio de LinkedIn para poder añadirlas, por eso es el paso 2).
         if self.cargar_cookies_desde_archivo():
-            self.driver.get("https://www.linkedin.com/feed/")
+            self._get("https://www.linkedin.com/feed/")
             time.sleep(self.gaussian_delay(3, 1))
             self._esperar_resolucion()
             if self.sesion_activa():
@@ -419,7 +423,7 @@ class LinkedInActivityScraper:
                   "El navegador sigue abierto, no se pierde la sesión.")
             if not self.esperar_login_manual(contexto or url_destino):
                 return False
-            self.driver.get(url_destino)
+            self._get(url_destino)
             time.sleep(self.gaussian_delay(3, 1))
             self._esperar_resolucion()
         return not self._es_muro()
@@ -638,6 +642,91 @@ class LinkedInActivityScraper:
         hallado = re.search(r"(urn:li:(?:activity|ugcPost|share):\d+)", href or "")
         return hallado.group(1) if hallado else ""
 
+    def _boton_siguiente_foto(self, post):
+        """El control del carrusel de fotos, no un «siguiente» de otra cosa."""
+        claves = ("siguiente imagen", "next image", "imagen siguiente",
+                  "ver imagen siguiente", "show next image", "foto siguiente")
+        try:
+            for el in post.find_elements(By.CSS_SELECTOR, "button[aria-label]")[:16]:
+                etiqueta = (el.get_attribute("aria-label") or "").strip().lower()
+                if any(k in etiqueta for k in claves):
+                    return el
+        except Exception:
+            return None
+        return None
+
+    def _foto_del_bloque(self, post):
+        """Si LinkedIn pintó la foto como bloque y no como img suelta, se captura el bloque."""
+        from app.imagenes_pub import guardar_bytes, medida_util
+        selectores = (
+            "div.update-components-image",
+            "div.feed-shared-image",
+            "[class*='update-components-image']",
+            "[class*='feed-shared-image']",
+        )
+        salida, vistos = [], set()
+        for sel in selectores:
+            try:
+                bloques = post.find_elements(By.CSS_SELECTOR, sel)
+            except Exception:
+                continue
+            for bloque in bloques[:4]:
+                try:
+                    self.driver.execute_script(
+                        "arguments[0].scrollIntoView({block:'center', inline:'nearest'});", bloque)
+                    tam = bloque.size or {}
+                    if not medida_util(int(tam.get("width") or 0), int(tam.get("height") or 0)):
+                        continue
+                    ident = guardar_bytes(bloque.screenshot_as_png)
+                    if not ident or ident in vistos:
+                        continue
+                    vistos.add(ident)
+                    alt = (bloque.get_attribute("aria-label") or "").strip()[:180]
+                    salida.append({"id": ident, "alt": alt})
+                except Exception:
+                    continue
+            if salida:
+                break
+        return salida
+
+    def _fotos_de_publicacion(self, post):
+        """Fotos de esa publicación: las visibles, las del carrusel y el bloque si hace falta."""
+        from app.imagenes_pub import TOPE, capturar
+        try:
+            self.driver.execute_script(
+                "arguments[0].scrollIntoView({block:'center', inline:'nearest'});", post)
+            self.driver.execute_script("""
+                arguments[0].querySelectorAll('img').forEach(img => { img.loading = 'eager'; });
+            """, post)
+            time.sleep(0.4)
+        except Exception:
+            pass
+        tope = max(TOPE, 6)
+        fotos = capturar(post, tope=tope, driver=self.driver)
+        vistos = {f["id"] for f in fotos if f.get("id")}
+        for _ in range(4):
+            if len(fotos) >= tope:
+                break
+            boton = self._boton_siguiente_foto(post)
+            if boton is None:
+                break
+            try:
+                self.driver.execute_script("arguments[0].click();", boton)
+                time.sleep(0.45)
+            except Exception:
+                break
+            for foto in capturar(post, tope=tope, driver=self.driver):
+                ident = foto.get("id")
+                if not ident or ident in vistos:
+                    continue
+                vistos.add(ident)
+                fotos.append(foto)
+                if len(fotos) >= tope:
+                    break
+        if not fotos:
+            fotos = self._foto_del_bloque(post)
+        return fotos[:tope]
+
     def extraer_urn(self, post):
         try:
             urn = post.get_attribute("data-urn")
@@ -708,7 +797,7 @@ class LinkedInActivityScraper:
         if not profile_url or ruta_linkedin_rota(profile_url):
             return False
         try:
-            self.driver.get(profile_url)
+            self._get(profile_url)
             time.sleep(0.6)
             self._esperar_perfil_o_404(4)
             return not self._es_404()
@@ -767,15 +856,53 @@ class LinkedInActivityScraper:
                     urls.append(cand)
         return urls
 
+    def _get(self, url):
+        """Abre la URL. Si LinkedIn se queda en blanco, corta la carga y sigue."""
+        try:
+            self.driver.get(url)
+        except TimeoutException:
+            print(f"  ⏱ LinkedIn no terminó de cargar a tiempo. Se corta la espera: {url}")
+            try:
+                self.driver.execute_script("window.stop();")
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"  ⚠ Chrome no pudo abrir esa URL: {e}")
+            raise
+
+    def _actividad_con_posts(self):
+        try:
+            return bool(self.driver.find_elements(
+                By.CSS_SELECTOR,
+                "[data-testid='expandable-text-box'], [data-urn], "
+                "div[role='listitem'][componentkey^='update-card']"))
+        except Exception:
+            return False
+
+    def _esperar_actividad(self, segundos=8):
+        """Espera poco a que salgan publicaciones. Si la vista sigue vacía, no se queda."""
+        fin = time.time() + segundos
+        vacio = ("no hay actividad en este momento", "no recent activity",
+                 "nothing to see here", "nothing to see for you")
+        while time.time() < fin:
+            if self._es_404() or self._es_muro() or self._actividad_con_posts():
+                return
+            try:
+                texto = (self.driver.find_element(By.TAG_NAME, "body").text or "").lower()
+            except Exception:
+                texto = ""
+            if any(f in texto for f in vacio):
+                return
+            time.sleep(0.4)
+
     def _abrir_linkedin(self, url, contexto="", volver_si_falla=None):
         if ruta_linkedin_rota(url):
             print(f"  Se omite una ruta que LinkedIn responde con 404: {url}")
             return False
         print(f"  → {url}")
         try:
-            self.driver.get(url)
-        except Exception as e:
-            print(f"  ⚠ Chrome no pudo abrir esa URL: {e}")
+            self._get(url)
+        except Exception:
             if volver_si_falla:
                 self._volver_al_perfil(volver_si_falla)
             return False
@@ -941,6 +1068,15 @@ class LinkedInActivityScraper:
                                         volver_si_falla=profile_url):
                 print("  ⚠ Ruta de actividad no disponible; se prueba la siguiente.")
                 continue
+            self._esperar_actividad(8)
+            if not self._actividad_con_posts():
+                try:
+                    texto_vista = (self.driver.find_element(By.TAG_NAME, "body").text or "").strip()
+                except Exception:
+                    texto_vista = ""
+                if len(texto_vista) < 180:
+                    print("  ℹ Esta vista de actividad quedó en blanco. Se sigue.")
+                    continue
             if not sufijo:
                 try:
                     self.driver.execute_script("""
@@ -969,13 +1105,6 @@ class LinkedInActivityScraper:
                 print("  ℹ LinkedIn no muestra actividad en este apartado.")
                 continue
             contenedor = self.obtener_contenedor_publicaciones() or self.driver
-            try:
-                WebDriverWait(self.driver, 4).until(lambda d: d.find_elements(
-                    By.CSS_SELECTOR,
-                    "[data-testid='expandable-text-box'], [data-urn], "
-                    "div[role='listitem'][componentkey^='update-card']"))
-            except TimeoutException:
-                pass
             tope = max_posts * 2
             for ronda in range(3):
                 posts = self.obtener_publicaciones(contenedor)
@@ -983,8 +1112,11 @@ class LinkedInActivityScraper:
                     try:
                         urn = self.extraer_urn(post)
                         texto = self.extraer_texto_publicacion(post)
-                        if len(texto) < 5:
+                        fotos = self._fotos_de_publicacion(post)
+                        if len(texto) < 5 and not fotos:
                             continue
+                        if len(texto) < 5:
+                            texto = "Publicó una imagen."
                         clave = urn if urn != "N/A" else re.sub(r"\s+", " ", texto.lower())[:200]
                         if clave in vistos:
                             continue
@@ -1000,15 +1132,15 @@ class LinkedInActivityScraper:
                             or "ha compartido esto" in cabecera
                             or "reposted" in cabecera
                             or "reposteo" in cabecera)
-                        n_img = 0
-                        try:
-                            n_img = len([im for im in post.find_elements(By.TAG_NAME, "img")
-                                         if (im.size or {}).get("width", 0) > 60])
-                        except Exception:
-                            n_img = 0
-                        from app.imagenes_pub import capturar
-                        fotos = capturar(post)
-                        n_img = max(n_img, len(fotos))
+                        vista = {}
+                        if fotos:
+                            try:
+                                from app import vision_pub
+                                vista = vision_pub.analizar(fotos) or {}
+                                fotos = vista.get("fotos") or fotos
+                            except Exception as e:
+                                print(f"  ⚠ No se pudo leer el texto de las imágenes: {e}")
+                        n_img = len(fotos)
                         publicaciones.append({
                             'perfil': profile_url,
                             'urn': urn,
@@ -1018,6 +1150,8 @@ class LinkedInActivityScraper:
                                                   or 'share' in urn) else 'actividad'),
                             'autor': self.extraer_autor(post),
                             'texto': texto,
+                            'texto_imagen': (vista.get("texto") or "") if fotos else "",
+                            'descripcion_imagen': (vista.get("descripcion") or "") if fotos else "",
                             'tiempo': self.extraer_tiempo_publicacion(post),
                             'imagenes': fotos,
                             'n_imagenes': n_img,

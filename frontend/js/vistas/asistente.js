@@ -16,6 +16,7 @@ const SUGERENCIAS = [
   { texto: "Resumen de los clientes interesados en seguro educativo", permiso: "resumen" },
   { texto: "Plantilla de mensaje para clientes de seguro de vida", permiso: "mensaje_segmento" },
   { texto: "Lista los clientes de seguro educativo en Medellín", permiso: "listar" },
+  { texto: "Lista los perfiles con scraping que no están en la lista de clientes", permiso: "listar" },
   { texto: "Hazme un mensaje de WhatsApp para ", permiso: "mensaje_cliente", completar: true },
   { texto: "/borradores requiere_revision", permiso: "ver_mensajes" },
 ];
@@ -44,7 +45,8 @@ function chipIntencion(i) {
   return h("div", { class: "intencion" }, icono("sparkle"), "Entendí:",
     h("span", { class: "badge badge-info" }, ACCIONES[i.accion] || i.accion),
     i.agrupar_por ? h("span", { class: "chip chip-estatico" }, `por ${etiqueta(i.agrupar_por).toLowerCase()}`) : null,
-    Object.keys(i.filtros || {}).length ? chipsFiltros(i.filtros) : null,
+    i.origen === "perfiles" ? h("span", { class: "badge badge-info" }, "Sin vincular") : null,
+    Object.keys(i.filtros || {}).length ? chipsFiltros(i.filtros) : (i.origen === "perfiles" ? h("span", { class: "chip chip-estatico" }, "Perfiles con scraping") : null),
     i.canal ? h("span", { class: "chip chip-estatico" }, canalTexto(i.canal)) : null,
     i.nombre ? h("span", { class: "chip chip-estatico" }, i.nombre) : null);
 }
@@ -99,11 +101,15 @@ function respuesta(r) {
       if (!r.filas.length) {
         cuerpo.push(alerta("Sin resultados.", "warn"), diagnostico(r.diagnostico));
       } else {
+        const perfiles = r.origen === "perfiles";
         cuerpo.push(
-          h("div", { class: "fila", style: { marginBottom: "8px" } }, h("strong", {}, `${num(r.filas.length)} cliente(s)`),
+          r.texto ? h("p", {}, r.texto) : null,
+          h("div", { class: "fila", style: { marginBottom: "8px" } }, h("strong", {}, perfiles
+            ? `${num(r.filas.length)} perfil(es) con scraping, sin vincular`
+            : `${num(r.filas.length)} cliente(s)`),
             r.truncado ? h("span", { class: "muted" }, `· se muestran los primeros ${r.limite}; usa «contar» para el total`) : null),
-          tablaClientes(r.filas, { onAbrir: (f) => abrirCliente(f.clave_cliente), agruparPor: r.agrupar_por }));
-        if (puede("mensajes_lote") && Object.keys(r.filtros || {}).length) {
+          tablaClientes(r.filas, { onAbrir: perfiles ? null : (f) => abrirCliente(f.clave_cliente), agruparPor: r.agrupar_por }));
+        if (!perfiles && puede("mensajes_lote") && Object.keys(r.filtros || {}).length) {
           const b = h("button", { class: "btn btn-sm", style: { marginTop: "8px" } }, icono("mail"), "Generar borradores para este grupo");
           b.addEventListener("click", async () => {
             const datos = await conBoton(b, () => Promise.all([catalogo(), post("/api/contar", { filtros: r.filtros, agrupar_por: "segmento" })]));
@@ -148,6 +154,9 @@ function respuesta(r) {
     case "confirmar_lote":
       cuerpo.push(confirmarLote(r));
       break;
+    case "perfil":
+      cuerpo.push(h("p", {}, r.texto), r.ficha ? tablaClientes([r.ficha]) : null);
+      break;
     case "aviso":
       cuerpo.push(alerta(r.texto, "warn"));
       break;
@@ -157,7 +166,7 @@ function respuesta(r) {
   return cuerpo;
 }
 
-const ANCHAS = new Set(["conteo", "listado", "resumen", "plantilla", "borrador", "mensaje", "confirmar_lote"]);
+const ANCHAS = new Set(["conteo", "listado", "resumen", "plantilla", "borrador", "mensaje", "confirmar_lote", "perfil"]);
 
 async function enviar(texto) {
   agregar(filaYo(texto));

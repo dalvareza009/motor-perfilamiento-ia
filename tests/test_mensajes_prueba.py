@@ -24,6 +24,47 @@ def test_siempre_hay_tres_opciones_aunque_el_modelo_no_responda():
         assert "Global Seguros" in op["cuerpo"]
 
 
+def test_el_aviso_de_linkedin_no_es_el_nombre():
+    cuerpo = respaldo("(24) Jhonnathan Ocampo Diaz", "Seguro educativo",
+                      "Tu tranquilidad, en un solo lugar")
+    assert "Hola Jhonnathan." in cuerpo
+    assert "(24)" not in cuerpo
+    filas = [{
+        "nombre": "(24) Jhonnathan Ocampo Diaz",
+        "fuente_url": "https://www.linkedin.com/in/jhonnathan-ocampo/",
+        "red": "linkedin", "producto": "Seguro educativo", "opcion": 1,
+        "eslogan": "Tu tranquilidad, en un solo lugar", "cuerpo": cuerpo.replace("Jhonnathan", "(24)"),
+        "estado": "requiere_revision",
+        "errores_validacion": ["Incluye la cifra '24', que no está en la base de conocimiento."],
+        "creado_en": "2026-11-25T15:00:00",
+    }]
+    grupo = agrupar(filas)[0]
+    assert grupo["nombre"] == "Jhonnathan Ocampo Diaz"
+    assert "Hola Jhonnathan" in grupo["opciones"][0]["cuerpo"]
+    assert grupo["opciones"][0]["errores"] == []
+    assert grupo["opciones"][0]["estado"] == "borrador"
+
+
+def test_el_saludo_no_usa_palabras_ni_numeros_de_la_pagina():
+    url = "https://www.linkedin.com/in/mariana-gutierrez-jaramillo/"
+    base = ("En Global Seguros podemos conversar sobre el Seguro de vida. "
+            "¿Hablamos con un asesor cuando te quede bien?\n\n"
+            "Tu tranquilidad, en un solo lugar")
+    for saludo in ("Hola Publicación,", "Hola (8).", "Hola Notificaciones,", "Hola N/A,"):
+        filas = [{
+            "nombre": "Publicación", "fuente_url": url, "red": "linkedin",
+            "producto": "Seguro de vida", "opcion": 1,
+            "eslogan": "Tu tranquilidad, en un solo lugar",
+            "cuerpo": f"{saludo} {base}", "estado": "borrador",
+            "errores_validacion": [], "creado_en": "2026-11-25T15:10:00",
+        }]
+        grupo = agrupar(filas)[0]
+        assert grupo["nombre"] == "Mariana Gutierrez Jaramillo"
+        assert grupo["opciones"][0]["cuerpo"].startswith("Hola Mariana")
+        assert "Publicación" not in grupo["opciones"][0]["cuerpo"]
+        assert "Notificaciones" not in grupo["opciones"][0]["cuerpo"]
+
+
 def test_mensajes_salen_por_fecha_no_por_nombre():
     filas = [
         {"nombre": "Ana Gómez", "fuente_url": "u1", "red": "instagram", "producto": "P",

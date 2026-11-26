@@ -300,6 +300,20 @@ def panel(s=Depends(sesion)):
 
 # ------------------------------------------------------------------ consultas agregadas (mismas reglas que el asistente)
 def _r_contar(intencion, s):
+    if intencion.get("origen") == "perfiles":
+        from app.perfiles_consulta import DIMENSIONES, consultar, contar
+        fichas, _ = consultar(intencion["filtros"], intencion.get("nombre"), 500)
+        dim = intencion.get("agrupar_por") if intencion.get("agrupar_por") in DIMENSIONES else "red"
+        if intencion.get("agrupar_por") not in DIMENSIONES:
+            todas = [("sin vincular", len(fichas))]
+            dim = "origen"
+        else:
+            todas = contar(fichas, dim)
+        visibles = governance.aplicar_k_anonimato(todas, s["rol"])
+        governance.registrar(s["usuario"], s["rol"], "contar", intencion, len(visibles))
+        return {"tipo": "conteo", "dimension": dim, "total": len(fichas), "origen": "perfiles",
+                "filas": [{"valor": v, "n": n} for v, n in visibles],
+                "ocultos": len(todas) - len(visibles), "k_min": governance.K_MIN}
     dim = intencion.get("agrupar_por") or "segmento"
     if dim not in segmentos.DIMENSIONES:
         raise HTTPException(400, f"Dimensión no permitida: {dim}")
@@ -312,6 +326,19 @@ def _r_contar(intencion, s):
 
 
 def _r_listar(intencion, s):
+    if intencion.get("origen") == "perfiles":
+        from app.perfiles_consulta import consultar, diagnostico, texto
+        filas, total = consultar(intencion["filtros"], intencion.get("nombre"), governance.LIMITE_LISTADO)
+        governance.registrar(s["usuario"], s["rol"], "listar", intencion, len(filas))
+        out = {"tipo": "listado", "filas": filas, "filtros": intencion["filtros"],
+               "agrupar_por": intencion.get("agrupar_por"), "origen": "perfiles",
+               "truncado": total > len(filas), "limite": governance.LIMITE_LISTADO,
+               "texto": texto(filas[0]) if len(filas) == 1 else
+               f"{total} personas con scraping que no están en la lista de clientes."}
+        if not filas:
+            out["diagnostico"] = diagnostico(intencion["filtros"])
+            out["texto"] = "No hay perfiles con scraping fuera de la lista de clientes para ese criterio."
+        return out
     filas = segmentos.listar(intencion["filtros"], governance.LIMITE_LISTADO)
     governance.registrar(s["usuario"], s["rol"], "listar", intencion, len(filas))
     out = {"tipo": "listado", "filas": filas, "filtros": intencion["filtros"],
@@ -323,12 +350,20 @@ def _r_listar(intencion, s):
 
 
 def _r_resumen(intencion, s):
+    if intencion.get("origen") == "perfiles":
+        from app.perfiles_consulta import consultar, resumen as resumen_perfiles
+        fichas, _ = consultar(intencion["filtros"], intencion.get("nombre"), 500)
+        resumen = resumen_perfiles(fichas)
+        governance.registrar(s["usuario"], s["rol"], "resumen", intencion, resumen["total"])
+        return {"tipo": "resumen", "resumen": resumen, "filtros": intencion["filtros"], "origen": "perfiles"}
     resumen = segmentos.resumen_segmento(intencion["filtros"])
     governance.registrar(s["usuario"], s["rol"], "resumen", intencion, resumen["total"])
     return {"tipo": "resumen", "resumen": resumen, "filtros": intencion["filtros"]}
 
 
 def _r_plantilla(intencion, s):
+    if intencion.get("origen") == "perfiles":
+        return _r_resumen(intencion, s)
     with tareas.capturar():
         texto, resumen, errores = asesor.mensaje_segmento(intencion["filtros"])
     governance.registrar(s["usuario"], s["rol"], "mensaje_segmento", intencion, resumen["total"])
@@ -602,7 +637,13 @@ def _r_mensaje_cliente(intencion, s):
         return {"tipo": "aviso", "texto": "¿Para qué cliente? Indica su nombre o su clave."}
     coincidencias = mensajes.buscar_cliente(intencion["nombre"])
     if not coincidencias:
-        return {"tipo": "aviso", "texto": f"No encontré clientes que coincidan con '{intencion['nombre']}'."}
+        from app.perfiles_consulta import consultar, texto
+        fichas, _ = consultar({}, intencion["nombre"], 3)
+        if fichas:
+            governance.registrar(s["usuario"], s["rol"], "listar", intencion, 1)
+            return {"tipo": "perfil", "origen": "perfiles", "ficha": fichas[0], "texto": texto(fichas[0])}
+        return {"tipo": "aviso", "texto":
+                f"No encontré clientes ni perfiles con scraping que coincidan con '{intencion['nombre']}'."}
     opciones_ = [{"clave_cliente": c[0], "nombre": c[1], "ciudad": c[2]} for c in coincidencias]
     if len(opciones_) > 1:
         return {"tipo": "elegir_cliente", "opciones": opciones_, "canal": intencion["canal"],
@@ -614,6 +655,8 @@ def _r_mensaje_cliente(intencion, s):
 
 def _r_lote(intencion, s):
     """En la web el lote se confirma antes de lanzar: una mala interpretación no genera 50 borradores."""
+    if intencion.get("origen") == "perfiles":
+        return _r_listar(intencion, s)
     if not intencion["filtros"]:
         return {"tipo": "aviso", "texto": "Para generar en lote indica un grupo (por ejemplo, el producto o la ciudad)."}
     total = segmentos.contar_total(intencion["filtros"])
@@ -649,7 +692,7 @@ def asistente(datos: Pregunta, s=Depends(sesion)):
     if pregunta.startswith("/"):
         return _comando(pregunta, s)
     with tareas.capturar():
-        intencion = asesor.sanear(asesor.interpretar(pregunta))
+        intencion = asesor.reconocer_perfiles(pregunta, asesor.sanear(asesor.interpretar(pregunta)))
     if intencion is None:
         return {"tipo": "aviso", "texto": "No pude interpretar la solicitud. ¿Puedes reformularla?"}
     if intencion["no_soportado"]:
@@ -1047,7 +1090,7 @@ def perfiles_hechos(datos: FiltroHechos, s=Depends(sesion)):
     else:
         where += " AND NOT (categoria = ANY(%s))"
         params = (cats_fuera, nombre, nombre, datos.limite)
-    return _consulta(f"""SELECT id_hecho, nombre, clave_cliente, red, fuente_url, categoria, titulo, contenido,
+    filas = _consulta(f"""SELECT id_hecho, nombre, clave_cliente, red, fuente_url, categoria, titulo, contenido,
                                 activo, descartado, fecha_actualizacion
                          FROM public.hechos_perfil
                          WHERE {where} AND (%s = '' OR LOWER(nombre) = LOWER(%s))
@@ -1058,7 +1101,15 @@ def perfiles_hechos(datos: FiltroHechos, s=Depends(sesion)):
                             WHEN 'Seguidor' THEN 3
                             ELSE 4 END, id_hecho DESC
                          LIMIT %s""",
-                     params)
+                      params)
+    if datos.grupo in ("", "ficha"):
+        limpias = []
+        for f in filas:
+            texto = perfil_redes.limpiar_contenido_ficha(f.get("contenido") or "")
+            if texto:
+                limpias.append({**f, "contenido": texto})
+        return limpias
+    return filas
 
 
 @app.post("/api/perfiles/hechos/aprobar")
@@ -1115,14 +1166,29 @@ def perfiles_persona(datos: NombrePersona, s=Depends(sesion)):
                           ORDER BY id_hecho""", (nombre.strip(),))
     if not hechos:
         raise HTTPException(404, f"No hay hechos de perfil para '{nombre}'.")
-    aprobados = [h for h in hechos if h["activo"]]
+    fuera = set(contenido.excluidas_de_ficha()) | {"Gusto"}
+    ficha_hechos = []
+    for h in hechos:
+        if (h.get("categoria") or "") in fuera:
+            continue
+        texto = perfil_redes.limpiar_contenido_ficha(h.get("contenido") or "")
+        if texto:
+            ficha_hechos.append({**h, "contenido": texto})
+    aprobados = [h for h in ficha_hechos if h["activo"]]
     clave = next((h["clave_cliente"] for h in hechos if h["clave_cliente"]), None)
     candidatos = ingesta_perfiles._clientes_por_nombre(nombre)
     if clave and not any(c["clave_cliente"] == clave for c in candidatos):
         candidatos = [c for c in ingesta_perfiles._clientes_por_nombre(clave) if c["clave_cliente"] == clave] + candidatos
     vinculado = next((c for c in candidatos if c["clave_cliente"] == clave), None) if clave else None
-    return {"nombre": nombre.strip(), "hechos": hechos, "clave_cliente": clave,
-            "datos": perfil_redes.datos_para_cliente(aprobados) if aprobados else None,
+    ficha = perfil_redes.organizar_ficha(aprobados)
+    datos = perfil_redes.datos_para_cliente(aprobados) if aprobados else {}
+    estudios = next((s["items"] for s in ficha if s["clave"] == "estudios"), [])
+    if estudios:
+        datos["universidad"] = "; ".join(i["texto"] for i in estudios)
+    return {"nombre": nombre.strip(), "hechos": ficha_hechos, "ficha": ficha,
+            "pendientes_ficha": sum(1 for h in ficha_hechos if not h["activo"] and not h["descartado"]),
+            "clave_cliente": clave,
+            "datos": datos,
             "clientes": candidatos, "vinculado": vinculado}
 
 

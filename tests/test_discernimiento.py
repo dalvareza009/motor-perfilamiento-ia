@@ -2,7 +2,7 @@
 
 Ejecutar:  python -m tests.test_discernimiento
 """
-from app.discernimiento import evaluar, filtrar_posts, sirve_post
+from app.discernimiento import evaluar, ficha_necesaria, filtrar_posts, sirve_post
 from app.gustos import hechos_de_gustos
 
 
@@ -50,6 +50,25 @@ def test_intereses_de_vida_tambien_cuentan_para_acercarnos():
     titulos = {h["titulo"] for h in hechos}
     assert "Gusto · Finanzas" in titulos
     assert "Gusto · Entretenimiento" in titulos
+
+
+def test_la_ficha_clara_se_aprueba_sola_y_el_resto_no():
+    assert ficha_necesaria("Trabajo", "Analista de datos en Global Seguros") == "Trabajo"
+    assert ficha_necesaria("Experiencia", "Trabajé en Bancolombia como cajera hasta 2020") == "Experiencia"
+    assert ficha_necesaria("Descripcion", "Estudié ingeniería en la Universidad EAFIT") == "Estudios"
+    assert ficha_necesaria("Informacion", "Estoy casada") == "Estado civil"
+    assert ficha_necesaria("Descripcion", "Soy de Cali") == "Origen"
+    assert ficha_necesaria("Ubicacion", "Vivo en Medellín") == "Ubicacion"
+    assert ficha_necesaria("Ubicacion", "Medellín, Antioquia, Colombia") == "Ubicacion"
+    assert ficha_necesaria("Edad", "Tengo 29 años") == "Edad"
+    assert ficha_necesaria("Cursos", "Hice un curso de Excel en Platzi") == ""
+    assert ficha_necesaria("Descripcion", "Trabajo en equipo los viernes") == ""
+    assert ficha_necesaria("Descripcion", "Busco empleo desde marzo") == ""
+    assert ficha_necesaria("Ubicacion", "De vacaciones en Cartagena con mi hija") == ""
+    assert ficha_necesaria("Edad", "Mi hija tiene 8 años") == ""
+    assert ficha_necesaria("Ingresos", "Me subieron el salario este año") == ""
+    assert ficha_necesaria("Sigue a", "Sigue a Bancolombia") == ""
+    assert ficha_necesaria("Producto sugerido", "Seguro de vida") == ""
 
 
 if __name__ == "__main__":

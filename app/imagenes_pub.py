@@ -78,12 +78,46 @@ def para_api(valor):
     return parsear(valor)
 
 
-def capturar(contenedor, tope=TOPE):
-    """Captura hasta `tope` fotos visibles de un post (Webelement Selenium)."""
+def medida_util(ancho, alto, natural_ancho=0, natural_alto=0):
+    """La foto cuenta si se ve en pantalla o si el archivo ya cargó con tamaño real."""
+    if ancho >= MIN_ANCHO and alto >= 50:
+        return True
+    return natural_ancho >= MIN_ANCHO and natural_alto >= 50
+
+
+def _natural(driver, im):
+    if driver is None:
+        return 0, 0
+    try:
+        par = driver.execute_script(
+            "return [arguments[0].naturalWidth || 0, arguments[0].naturalHeight || 0];",
+            im) or [0, 0]
+        return int(par[0] or 0), int(par[1] or 0)
+    except Exception:
+        return 0, 0
+
+
+def _a_la_vista(driver, elemento):
+    if driver is None or elemento is None:
+        return
+    try:
+        driver.execute_script(
+            "arguments[0].scrollIntoView({block:'center', inline:'nearest'});", elemento)
+    except Exception:
+        pass
+
+
+def capturar(contenedor, tope=TOPE, driver=None):
+    """Captura hasta `tope` fotos de un post (Webelement Selenium).
+
+    Si se pasa el driver, acerca el post y cada imagen antes de la captura.
+    Así entran las que LinkedIn deja en cero hasta que están en pantalla.
+    """
     if contenedor is None:
         return []
     from selenium.webdriver.common.by import By
 
+    _a_la_vista(driver, contenedor)
     salida, vistos = [], set()
     try:
         imgs = contenedor.find_elements(By.TAG_NAME, "img")
@@ -93,10 +127,12 @@ def capturar(contenedor, tope=TOPE):
         if len(salida) >= tope:
             break
         try:
+            _a_la_vista(driver, im)
             tam = im.size or {}
             ancho = int(tam.get("width") or 0)
             alto = int(tam.get("height") or 0)
-            if ancho < MIN_ANCHO or alto < 50:
+            nw, nh = _natural(driver, im)
+            if not medida_util(ancho, alto, nw, nh):
                 continue
             src = (im.get_attribute("currentSrc") or im.get_attribute("src") or "").lower()
             alt = (im.get_attribute("alt") or "").strip()

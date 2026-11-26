@@ -80,8 +80,9 @@ def validar(cuerpo, asunto, canal, cliente, conocimiento):
     if re.search(r"[\[\{][^\]\}]*[\]\}]", f"{asunto} {cuerpo}"):
         errores.append("Contiene marcadores sin reemplazar ([...] o {...}).")
 
-    nombre = (cliente.get("nombre") or "").split()
-    if nombre and _n(nombre[0]) not in _n(cuerpo):
+    from app.perfil_redes import primer_nombre
+    nombre = primer_nombre(cliente.get("nombre"))
+    if nombre and _n(nombre) not in _n(cuerpo):
         errores.append("No usa el nombre del cliente.")
 
     # Huella de marca: sin nombrar a Global Seguros el mensaje no es de la compañía,

@@ -8,14 +8,14 @@ Referencia para el motor de perfilamiento IA de Global Seguros.
 - **Revisión de fuentes oficiales:** [fuentes-oficiales.pdf](./fuentes-oficiales.pdf)
 - **Enlaces oficiales:** [enlaces.md](./enlaces.md)
 
-Cubren privacidad, retención, entrenamiento de modelos, seguridad, costos/créditos y enlaces oficiales de Selenium y Firecrawl, con notas de Ley 1581 de 2012 y Decreto 1074 de 2015 (Colombia).
+Cubren privacidad, retención, entrenamiento de modelos, seguridad, costos, créditos, enlaces oficiales y en qué momento el motor usa cada herramienta.
 
 ## Cómo aplica a este proyecto
 
 | Herramienta | Uso en el motor | Lectura clave |
 | --- | --- | --- |
 | **Selenium + Chrome** | Extraer perfiles en redes con sesión local | El contenido no se envía a Selenium HQ; la retención y seguridad las define Global (PC, cookies, Postgres). No hay entrenamiento de IA por parte de Selenium. |
-| **Firecrawl Cloud** | Ingesta del sitio de producto y, cuando aplica, fichas públicas vía API (`FIRECRAWL_API_KEY`) | Las URL y el contenido pasan por Firecrawl (EE. UU.). Hay caché; ZDR es Enterprise. No hay confirmación pública inequívoca de “sí/no entrenan” con cada scrape: para datos personales conviene confirmación contractual. |
+| **Firecrawl Cloud** | Sitio de producto y lote de perfiles autorizados (`FIRECRAWL_API_KEY`). No es el botón Extraer. | Las URL y el contenido pasan por Firecrawl (EE. UU.). No hay un interruptor general para impedir entrenamiento. ZDR es Enterprise. |
 | **LLM (API u Ollama)** | Asistente y borradores | Queda fuera de estos PDF; Global sigue siendo responsable del tratamiento cuando usa IA de terceros. |
 
 Reglas operativas que el código ya asume:

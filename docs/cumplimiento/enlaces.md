@@ -41,13 +41,6 @@ Lista de consulta rápida. Las tarifas y políticas pueden cambiar; verificar la
 | Crisp | https://crisp.chat/en/privacy/ |
 | Vercel Analytics | https://vercel.com/legal/privacy-policy |
 
-## Normativa Colombia (referencia)
-
-| Tema | URL |
-| --- | --- |
-| Ley 1581 de 2012 | https://www.funcionpublica.gov.co/eva/gestornormativo/norma.php?i=49981 |
-| Decreto 1074 de 2015 | https://cancilleria.gov.co/sites/default/files/Normograma/docs/decreto_1074_2015_pr026.htm |
-
 ## PDF del proyecto
 
 - [proveedores-extraccion.pdf](./proveedores-extraccion.pdf)

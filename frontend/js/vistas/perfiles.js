@@ -130,10 +130,7 @@ function mostrarRecomendaciones(res, zona) {
     info.edad ? h("div", {}, info.edad) : null,
     info.logros ? h("div", {}, info.logros) : null,
     info.resumen_red ? h("div", {}, info.resumen_red) : null,
-    info.paginas_seguidas ? h("div", { class: "muted pequeño" }, info.paginas_seguidas) : null,
-    info.interacciones ? h("div", { class: "muted pequeño" }, info.interacciones) : null,
     info.en_x_desde ? h("div", { class: "muted pequeño" }, info.en_x_desde) : null,
-    info.seguidores ? h("div", { class: "muted pequeño" }, `${info.seguidores} amigos/seguidores`) : null,
     info.privado ? alerta("La cuenta es privada para esta sesión: se guardó la ficha visible y no se leyeron publicaciones.", "warn") : null,
     res.temas_del_perfil && Object.keys(res.temas_del_perfil).length
       ? h("div", {}, `Temas desde la ficha: ${Object.entries(res.temas_del_perfil).map(([t, n]) => `${t} (${n})`).join(", ")}`) : null) : null;
@@ -1200,10 +1197,11 @@ function fichaPersona(d, refrescar) {
       h("div", { class: "fila" }, h("h2", { style: { flex: "1" } }, d.nombre),
         d.clave_cliente ? badge(`clave ${d.clave_cliente}`, "ok") : badge("Sin vincular", "warn")),
       aprobados.length ? null : alerta("Esta persona no tiene hechos aprobados todavía. Apruébalos en «Revisión de hechos» antes de vincular o completar.", "warn"),
-      h("h3", {}, "Lo que dicen los hechos aprobados"),
+      h("h3", {}, "Resumen"),
       h("div", { class: "datos-grid" },
         dato("Producto para ofrecer", datos.producto_interes || "Sin sugerencia aprobada"), dato("Ciudad", datos.ciudad),
-        dato("Profesión", datos.profesion), dato("Estudios", datos.universidad), dato("Correo", datos.correo), dato("Celular", datos.celular)),
+        dato("Profesión", datos.profesion), dato("Correo", datos.correo), dato("Celular", datos.celular)),
+      d.pendientes_ficha ? h("p", { class: "muted pequeño" }, `${d.pendientes_ficha} hecho(s) de ficha por revisar en «Revisión de hechos».`) : null,
       d.vinculado
         ? alerta([h("strong", {}, `Vinculado a ${d.vinculado.nombre}. `),
           canal ? `El asesor puede pedir: «mensaje de ${canal} para ${d.vinculado.nombre}».` : "El cliente no tiene correo ni celular válido: el asesor lo encuentra pero no puede armar el borrador. Usa «Completar vacíos» si el perfil trae contacto."], canal ? "ok" : "warn")
@@ -1221,11 +1219,16 @@ function fichaPersona(d, refrescar) {
         : h("div", { class: "pila-sm" },
           h("p", { class: "muted" }, "Ese nombre no está en clientes. Puedes crearlo como prospecto con los datos aprobados."),
           h("div", { class: "fila", style: { alignItems: "flex-end" } }, h("div", { style: { flex: "1", minWidth: "220px" } }, campo("Producto de interés", producto)), bIncorporar))),
-    h("details", { class: "card" }, h("summary", {}, `Hechos (${d.hechos.length})`),
-      h("div", { class: "items", style: { marginTop: "10px" } }, d.hechos.map((x) => h("div", { class: "item", style: { gridTemplateColumns: "1fr" } },
-        h("div", {}, h("div", { class: "item-cab" }, badge(x.categoria, "info"), h("span", { class: "muted pequeño" }, x.red), h("span", { class: "espaciador" }),
-          x.activo ? badge("Aprobado", "ok") : x.descartado ? badge("Descartado") : badge("Pendiente", "warn")),
-        h("div", { class: "item-texto" }, x.contenido)))))));
+    h("div", { class: "card pila" },
+      h("h3", {}, "Ficha de la persona"),
+      h("p", { class: "muted pequeño" }, "Solo datos de la persona. Seguidores, cuentas seguidas, publicaciones, mensajes y comentarios están en sus propias pestañas."),
+      (d.ficha || []).length
+        ? (d.ficha || []).map((s) => h("div", { class: "pila-sm" },
+          h("h4", { style: { margin: "6px 0 0" } }, s.titulo),
+          h("ul", { class: "pequeño", style: { margin: "0", paddingLeft: "18px" } },
+            s.items.map((i) => h("li", { style: { marginBottom: "4px" } }, i.texto,
+              i.red ? h("span", { class: "muted" }, ` (${i.red})`) : null)))))
+        : vacio("Todavía no hay datos aprobados para mostrar en la ficha.", "idcard"))));
 }
 
 // ------------------------------------------------------------------ personas autorizadas (data/perfiles_autorizados.json)

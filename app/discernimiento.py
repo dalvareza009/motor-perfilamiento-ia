@@ -218,3 +218,83 @@ def filtrar_posts(posts):
 
 def gusto_comercial(categoria):
     return bool(producto_de_gusto(categoria))
+
+
+# Estas categorías no se aprueban solas: siguen, gustos, publicaciones, cursos, salario.
+_NO_AUTO = {
+    "producto sugerido", "sigue a", "gusto", "repost", "seguidor",
+    "paginas seguidas", "interacciones", "interes", "publicacion",
+    "mensaje", "comentario", "reaccion", "resumen de contenido",
+    "otra red", "ingresos", "contacto", "logros", "cursos",
+}
+_VAGAS = {"", "descripcion", "informacion", "situacion actual"}
+_ORIGEN = re.compile(
+    r"\b(soy de|naci en|nacido en|nacida en|originari[oa] de|natural de|procedo de)\b"
+)
+_LUGAR = re.compile(
+    r"^[A-ZÁÉÍÓÚÑ][\wÁÉÍÓÚÑáéíóúñ .'-]{1,40}"
+    r"(?:,\s*[A-ZÁÉÍÓÚÑ][\wÁÉÍÓÚÑáéíóúñ .'-]{1,40}){1,3}$"
+)
+_TRABAJO_REAL = re.compile(
+    r"\b(trabajo (?:en|como|de)|trabaje (?:en|como|de)|trabaja (?:en|como|de)|"
+    r"me dedico|experiencia laboral|experiencia (?:en|como)|cargo de|"
+    r"estoy emplead|soy emplead|soy independiente|trabajo independiente|"
+    r"soy autonom|estoy pensionad|soy pensionad|estoy jubilad|soy jubilad|"
+    r"estoy desemplead|soy desemplead|actualmente trabajo|estoy trabajando)\b"
+)
+_BUSCA_EMPLEO = re.compile(r"\b(busco empleo|buscando empleo)\b")
+_EN_EQUIPO = re.compile(r"\btrabajo en equipo\b")
+
+
+def _senales_ficha(texto):
+    """Trabajo real, estudios, estado civil, origen, dónde vive o edad. Nada más."""
+    from app.linkedin_texto import menciona_salario, motivo_sensible
+    from app.perfil_redes import (
+        CIUDAD, ESTADO_ACADEMICO, ESTADO_CIVIL, ESTADO_LABORAL, TRABAJO_CARGO,
+        UBICACION, _VIAJE, edad_de_frase,
+    )
+    from app.tipo_dato import eje_ficha
+
+    crudo = str(texto or "").strip()
+    n = _n(crudo)
+    if not n or motivo_sensible(crudo) or menciona_salario(crudo):
+        return set()
+    if _VIAJE.search(n):
+        return set()
+    senales = set()
+    if edad_de_frase(crudo):
+        senales.add("Edad")
+    if ESTADO_CIVIL.search(n):
+        senales.add("Estado civil")
+    if _ORIGEN.search(n):
+        senales.add("Origen")
+    elif UBICACION.search(n) or CIUDAD.match(crudo) or _LUGAR.match(crudo):
+        senales.add("Ubicacion")
+    eje = eje_ficha(crudo)
+    if eje == "Estudios" or (ESTADO_ACADEMICO.search(n) and eje != "Cursos"):
+        senales.add("Estudios" if eje == "Estudios" else "Estado academico")
+    busca = bool(_BUSCA_EMPLEO.search(n)) and not TRABAJO_CARGO.search(n)
+    en_equipo = bool(_EN_EQUIPO.search(n)) and not TRABAJO_CARGO.search(n)
+    if not busca and not en_equipo and (
+            TRABAJO_CARGO.search(n) or _TRABAJO_REAL.search(n) or ESTADO_LABORAL.search(n)):
+        if eje == "Experiencia":
+            senales.add("Experiencia")
+        elif ESTADO_LABORAL.search(n) and eje not in ("Trabajo", "Experiencia"):
+            senales.add("Estado laboral")
+        else:
+            senales.add("Trabajo")
+    return senales
+
+
+def ficha_necesaria(categoria, contenido):
+    """Categoría con la que se puede aprobar solo. Vacío si hace falta una persona."""
+    if _n(categoria) in _NO_AUTO:
+        return ""
+    senales = _senales_ficha(contenido)
+    if not senales:
+        return ""
+    if categoria in senales:
+        return categoria
+    if _n(categoria) in _VAGAS and len(senales) == 1:
+        return next(iter(senales))
+    return ""

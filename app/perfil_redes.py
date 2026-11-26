@@ -119,9 +119,16 @@ def _descartar(texto):
 
 _RUIDO_NOMBRE = {
     "n/a", "na", "linkedin", "feed", "inicio", "home", "publicacion",
-    "publication", "perfil", "profile", "actividad", "activity",
-    "conectar", "seguir", "ver perfil", "available", "sin nombre",
-    "esta pagina no existe", "this page doesnt exist", "substack", "reddit",
+    "publicaciones", "publication", "publications", "perfil", "profile",
+    "actividad", "activity", "conectar", "seguir", "ver perfil", "available",
+    "sin nombre", "esta pagina no existe", "this page doesnt exist",
+    "substack", "reddit", "facebook", "instagram", "notificacion",
+    "notificaciones", "notification", "notifications", "mensaje", "mensajes",
+    "message", "messages", "compartir", "share", "shares", "repost", "reposts",
+    "comentario", "comentarios", "comment", "comments", "reaccion", "reacciones",
+    "buscar", "search", "usuario", "user", "member", "miembro", "unete", "join",
+    "foto", "fotos", "imagen", "imagenes", "video", "videos", "post", "posts",
+    "update", "updates", "pagina", "page", "disponible", "miembro de linkedin",
 }
 
 
@@ -146,10 +153,38 @@ def nombre_desde_slug(url):
     return " ".join(p[0].upper() + p[1:] for p in palabras)[:120]
 
 
+# LinkedIn pone el número de avisos al inicio del título: "(24) Nombre | LinkedIn".
+_AVISO_LINKEDIN = re.compile(r"^(?:\(\s*\d{1,4}\+?\s*\)\s*)+")
+_SALUDO = re.compile(r"(?i)(\bHola)(\s*,?\s*)([^\s,;:.!?]+)")
+
+
+def _token_basura(token):
+    """Número de avisos o palabra de la interfaz, no un nombre de persona."""
+    t = re.sub(r"^[^\w]+|[^\w]+$", "", str(token or ""), flags=re.UNICODE)
+    if not t:
+        return True
+    if re.fullmatch(r"\d{1,4}\+?", t):
+        return True
+    return _n(t) in _RUIDO_NOMBRE
+
+
+def _sin_basura(texto):
+    texto = _AVISO_LINKEDIN.sub("", texto or "")
+    partes = []
+    for p in texto.split():
+        if _token_basura(p):
+            continue
+        limpio = p.strip(".,;:¡!¿?()[]{}")
+        if limpio and not _token_basura(limpio):
+            partes.append(limpio)
+    return " ".join(partes).strip(" ·|-")
+
+
 def nombre_de_perfil(texto, url=""):
-    """Nombre de persona. Descarta 'N/A', 'Publicación', el título de LinkedIn, etc."""
+    """Nombre de persona. Descarta 'N/A', 'Publicación', el (24) de LinkedIn, etc."""
     t = re.sub(r"\s+", " ", str(texto or "")).strip().split("\n")[0]
     t = t.split("|")[0].split(" – ")[0].split(" - ")[0].strip(" ·|-")
+    t = _sin_basura(t)
     baja = _n(t)
     if (len(t) < 2 or len(t) > 80 or baja in _RUIDO_NOMBRE or baja.startswith("http")
             or "linkedin" in baja or t.lower() == "n/a"):
@@ -157,6 +192,30 @@ def nombre_de_perfil(texto, url=""):
     if t:
         return t[:120]
     return nombre_desde_slug(url)
+
+
+def primer_nombre(nombre, url=""):
+    """Primera palabra del nombre real. Ignora números y palabras de la interfaz."""
+    limpio = nombre_de_perfil(nombre, url)
+    partes = [p for p in limpio.split() if not _token_basura(p)]
+    return partes[0] if partes else ""
+
+
+def corregir_saludo(cuerpo, nombre, url=""):
+    """Si el saludo dice Hola Publicación o Hola (24), lo cambia por el nombre real."""
+    limpio = nombre_de_perfil(nombre, url)
+    corto = primer_nombre(limpio)
+    if not corto or not cuerpo:
+        return cuerpo or ""
+    validos = {_n(p) for p in limpio.split() if p and not _token_basura(p)}
+
+    def cambiar(m):
+        token = m.group(3).strip("()")
+        if _n(token) in validos:
+            return m.group(0)
+        return f"{m.group(1)}{m.group(2)}{corto}"
+
+    return _SALUDO.sub(cambiar, cuerpo, count=1)
 
 
 _SUBSTACK_RESERVADOS = {
@@ -1008,6 +1067,114 @@ def hechos_desde_ficha(data):
         titulo = hecho["categoria"] if n == 1 else f"{hecho['categoria']} ({n})"
         salida.append({**hecho, "titulo": titulo})
     return salida
+
+
+# Lo que la red pega al final de la ficha y no es un dato de la persona.
+_CORTES_FICHA = (
+    r"m[aá]s perfiles para ti", r"people also viewed", r"perfiles similares",
+    r"personas que tambi[eé]n vieron", r"aptitudes\s*:", r"skills\s*:",
+    r"enviar mensaje", r"send message", r"linkedin corporation",
+    r"acerca de\s+accesibilidad", r"pautas comunitarias",
+    r"opciones de publicidad", r"talent solutions", r"marketing solutions",
+    r"sales solutions", r"centro de seguridad", r"centro de ayuda",
+    r"tienes preguntas\?", r"gestiona tu cuenta",
+    r"transparencia de las recomendaciones", r"peque[nñ]as empresas",
+    r"empleo marketing", r"privacidad y condiciones",
+)
+_CORTE_FICHA = re.compile("|".join(f"(?:{p})" for p in _CORTES_FICHA), re.I)
+_CONTEO_RED = re.compile(
+    r"\b\d[\d.,]*\s*(?:publicaciones|seguidores|seguidos|followers|following|posts)\b",
+    re.I,
+)
+_ETIQUETA_SECCION = re.compile(
+    r"^(?:educaci[oó]n|experiencia|trabajo|estudios|ubicaci[oó]n)\s+", re.I)
+
+
+def limpiar_contenido_ficha(texto):
+    """Quita el pie de la red, perfiles recomendados y conteos de seguidores."""
+    t = re.sub(r"\s+", " ", str(texto or "")).strip()
+    if not t:
+        return ""
+    m = _CORTE_FICHA.search(t)
+    if m:
+        t = t[:m.start()]
+    t = _CONTEO_RED.sub("", t)
+    t = _ETIQUETA_SECCION.sub("", t.strip())
+    return re.sub(r"\s+", " ", t).strip(" .|·-")
+
+
+def _items_ficha(hecho, nombre=""):
+    if (hecho.get("categoria") or "") == "Producto sugerido":
+        titulo = (hecho.get("titulo") or "").strip()
+        return [titulo] if titulo else []
+    crudo = limpiar_contenido_ficha(hecho.get("contenido") or "")
+    if not crudo:
+        return []
+    categoria = hecho.get("categoria") or ""
+    partes = [p.strip(" .") for p in re.split(r"\s*\|\s*|\n+", crudo) if p.strip(" .")]
+    if categoria in ("Ubicacion", "Origen"):
+        frases = []
+        for parte in partes:
+            frases.extend(p.strip(" .") for p in re.split(r"(?<=[.!?])\s+", parte) if p.strip(" ."))
+        partes = frases or partes
+    salida = []
+    nombre_n = _n(nombre or hecho.get("nombre") or "")
+    for parte in partes:
+        n = _n(parte)
+        if not n or n == nombre_n:
+            continue
+        if categoria in ("Descripcion", "Situacion actual", "Informacion"):
+            sin_nombre = n.replace(nombre_n, "").strip(" @·.-") if nombre_n else n
+            if len(sin_nombre) < 12:
+                continue
+        salida.append(parte)
+    return salida
+
+
+_SECCIONES_FICHA = (
+    ("trabajo", "Trabajo", ("Trabajo", "Estado laboral")),
+    ("experiencia", "Experiencia", ("Experiencia",)),
+    ("estudios", "Estudios", ("Estudios", "Estado academico")),
+    ("cursos", "Cursos", ("Cursos",)),
+    ("estado_civil", "Estado civil", ("Estado civil",)),
+    ("familia", "Familia e hijos", ("Familia", "Hijos", "Indicio de hijos")),
+    ("lugar", "De dónde es y dónde vive", ("Origen", "Ubicacion")),
+    ("edad", "Edad", ("Edad",)),
+    ("presentacion", "Presentación", ("Descripcion", "Situacion actual", "Informacion")),
+    ("contacto", "Contacto", ("Contacto", "Correo", "Celular")),
+    ("ingresos", "Ingresos publicados (solo para el asesor)", ("Ingresos",)),
+    ("producto", "Producto sugerido", ("Producto sugerido",)),
+)
+
+
+def organizar_ficha(hechos):
+    """Ficha legible: cada dato en su apartado y cada estudio como un renglón.
+
+    Seguidores, cuentas seguidas, reposts, publicaciones, mensajes, comentarios
+    y reacciones no entran: ya tienen su propia pestaña.
+    """
+    from app.contenido import excluidas_de_ficha
+    fuera = set(excluidas_de_ficha()) | {"Gusto"}
+    por_categoria = {}
+    for hecho in hechos or []:
+        if (hecho.get("categoria") or "") in fuera:
+            continue
+        por_categoria.setdefault(hecho.get("categoria") or "", []).append(hecho)
+    secciones = []
+    for clave, titulo, categorias in _SECCIONES_FICHA:
+        items, vistos = [], set()
+        for categoria in categorias:
+            for hecho in por_categoria.get(categoria, []):
+                for texto in _items_ficha(hecho):
+                    n = _n(texto)
+                    if n in vistos:
+                        continue
+                    vistos.add(n)
+                    items.append({"texto": texto, "red": hecho.get("red") or "",
+                                  "categoria": categoria})
+        if items:
+            secciones.append({"clave": clave, "titulo": titulo, "items": items})
+    return secciones
 
 
 def ciudad_usable(texto):

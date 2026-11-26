@@ -4,7 +4,7 @@ from pathlib import Path
 
 import app.imagenes_pub as imagenes_pub
 from app.contenido import describir_publicacion
-from app.imagenes_pub import dump, guardar_bytes, parsear, ruta
+from app.imagenes_pub import dump, guardar_bytes, medida_util, parsear, ruta
 
 
 def test_guarda_y_lee_una_foto():
@@ -22,6 +22,12 @@ def test_guarda_y_lee_una_foto():
         assert "id" in dump([{"id": ident, "alt": "foto"}])
     finally:
         imagenes_pub.CARPETA = original
+
+
+def test_una_foto_cuenta_aunque_linkedin_aun_no_la_pinte():
+    assert medida_util(0, 0, 640, 480) is True
+    assert medida_util(120, 80) is True
+    assert medida_util(20, 20, 10, 10) is False
 
 
 def test_describe_usa_el_alt_de_la_foto():

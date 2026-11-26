@@ -123,7 +123,6 @@ Puntos operativos:
 - Firecrawl precios/créditos: https://www.firecrawl.dev/pricing
 - Firecrawl seguridad / ZDR: https://docs.firecrawl.dev/security
 - Firecrawl Trust Center: https://trust.firecrawl.dev/
-- Ley 1581 de 2012 (Colombia): https://www.funcionpublica.gov.co/eva/gestornormativo/norma.php?i=49981
 
 La lista completa está en [docs/cumplimiento/enlaces.md](docs/cumplimiento/enlaces.md) y en los PDF.
 
