@@ -7,10 +7,14 @@ chrome_linkedin_profile
 chrome_facebook_profile
 chrome_instagram_profile
 chrome_x_profile
+chrome_substack_profile
+chrome_reddit_profile
 linkedin_cookies.json
 facebook_cookies.json
 instagram_cookies.json
 x_cookies.json
+substack_cookies.json
+reddit_cookies.json
 linkedin_resumen_*.json
 facebook_resumen_*.json
 instagram_resumen_*.json

@@ -92,6 +92,7 @@ def test_describe_caption_acotado_e_imagen():
         "texto": "Salí en bici con el grupo de ciclismo del trabajo.",
         "tiene_imagenes": True,
         "n_imagenes": 2,
+        "imagenes": [{"id": "abcdabcdabcdabcd", "alt": "Grupo de ciclismo en la montaña"}],
     })
     assert d["tiene_imagenes"] is True
     assert "imágenes" in d["resumen"].lower() or "imagen" in d["resumen"].lower()
@@ -119,11 +120,37 @@ def test_una_mencion_suelta_no_se_guarda_como_estudios():
     assert "Publicacion" in CATEGORIAS_CONTENIDO
     assert "Estudios" not in excluidas_de_ficha()
     assert "Comentario" in excluidas_de_ficha()
+    assert "Gusto" in excluidas_de_ficha()
+    assert "Seguidor" in excluidas_de_ficha()
+    assert "Sigue a" in excluidas_de_ficha()
+    assert "Interacciones" in excluidas_de_ficha()
+    assert "Otra red" in excluidas_de_ficha()
     assert "Ver más" not in quitar_ver_mas("Feliz de graduarme de la maestría. Ver más")
     otras = hechos_desde_info({
+        "titular": "Analista",
         "otras_redes": [{"red": "instagram", "url": "https://www.instagram.com/ana/"}],
     })
-    assert any("Instagram" in h["contenido"] and "scrapear" in h["contenido"] for h in otras)
+    assert all(h["categoria"] != "Otra red" for h in otras)
+
+
+def test_ficha_no_mezcla_seguidores_ni_comentadores():
+    from app.contenido import excluidas_de_ficha
+    hechos = hechos_desde_info({
+        "nombre": "Ana Gómez",
+        "titular": "Analista en Global",
+        "seguidores": ["Juan Pérez"],
+        "sigue_a": ["MAPFRE Colombia"],
+        "interacciones": "Comentó María López en una publicación.",
+    })
+    ficha = [h for h in hechos if h["categoria"] not in excluidas_de_ficha()]
+    cats_ficha = {h["categoria"] for h in ficha}
+    assert "Situacion actual" in cats_ficha
+    assert "Seguidor" not in cats_ficha
+    assert "Sigue a" not in cats_ficha
+    assert "Interacciones" not in cats_ficha
+    assert "Gusto" not in cats_ficha
+    cats = {h["categoria"] for h in hechos}
+    assert "Seguidor" in cats and "Sigue a" in cats and "Interacciones" in cats
 
 
 if __name__ == "__main__":

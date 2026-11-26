@@ -4,10 +4,11 @@ No se envían y no exigen correo ni celular: el asesor los revisa en la pestaña
 Siempre hay tres, uno por cada eslogan de Global Seguros.
 """
 import json
+import re
 
 from psycopg2.extras import Json
 
-from app import mensajes, validacion
+from app import mensajes, perfil_redes, validacion
 from app.conocimiento import get_product_knowledge
 from app.database import get_connection
 from app.ollama_client import generate_json
@@ -56,7 +57,7 @@ def _cliente(nombre, producto, hechos):
 
 def respaldo(nombre, producto, eslogan):
     """Texto fijo que cumple las reglas si el modelo no responde."""
-    corto = (nombre or "").split()[0] or "Hola"
+    corto = perfil_redes.primer_nombre(nombre) or "Hola"
     return (
         f"Hola {corto}. En Global Seguros podemos conversar sobre el {producto}: "
         f"te cuento para qué sirve y qué protege, solo con la información oficial del seguro. "
@@ -64,8 +65,11 @@ def respaldo(nombre, producto, eslogan):
     )
 
 
-def redactar_tres(nombre, producto, hechos, generar=None):
+def redactar_tres(nombre, producto, hechos, generar=None, url=""):
     """Tres opciones. Si el modelo falla, el respaldo completa hasta llegar a tres."""
+    limpio = perfil_redes.nombre_de_perfil(nombre, url)
+    if limpio:
+        nombre = limpio
     generar = generar or generate_json
     cliente = _cliente(nombre, producto, hechos)
     conocimiento = get_product_knowledge(producto)
@@ -101,24 +105,26 @@ def generar(nombre, url, red, producto, hechos, usuario=None):
     """Guarda las tres opciones de este prospecto y devuelve la lista."""
     if not (nombre and producto):
         return []
-    print(f"Redactando 3 mensajes de prueba para {nombre} ({producto})…")
-    opciones = redactar_tres(nombre, producto, hechos)
+    limpio = perfil_redes.nombre_de_perfil(nombre, url) or nombre
+    print(f"Redactando 3 mensajes de prueba para {limpio} ({producto})…")
+    opciones = redactar_tres(limpio, producto, hechos, url=url)
     asegurar_tabla()
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM public.mensajes_prueba WHERE nombre = %s", (nombre,))
+            cur.execute("DELETE FROM public.mensajes_prueba WHERE nombre = %s OR nombre = %s",
+                        (nombre, limpio))
             for op in opciones:
                 cur.execute("""INSERT INTO public.mensajes_prueba
                     (nombre, fuente_url, red, producto, opcion, eslogan, cuerpo, estado,
                      errores_validacion, creado_en)
                     VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s, now())""",
-                    (nombre, url, red, producto, op["opcion"], op["eslogan"], op["cuerpo"],
+                    (limpio, url, red, producto, op["opcion"], op["eslogan"], op["cuerpo"],
                      op["estado"], Json(op["errores"]) if op["errores"] else None))
         conn.commit()
     finally:
         conn.close()
-    print(f"OK {nombre}: 3 mensajes de prueba listos.")
+    print(f"OK {limpio}: 3 mensajes de prueba listos.")
     return opciones
 
 
@@ -128,10 +134,39 @@ def _marca_tiempo(valor):
     return str(valor or "")
 
 
+def _fila_visible(fila):
+    """El saludo usa el nombre real, no un número de avisos ni una palabra de la página."""
+    crudo = (fila.get("nombre") or "").strip()
+    url = fila.get("fuente_url") or ""
+    nombre = perfil_redes.nombre_de_perfil(crudo, url) or crudo
+    cuerpo = perfil_redes.corregir_saludo(fila.get("cuerpo") or "", nombre, url)
+    errores = fila.get("errores_validacion") or []
+    if isinstance(errores, str):
+        try:
+            errores = json.loads(errores)
+        except json.JSONDecodeError:
+            errores = []
+    corto = perfil_redes.primer_nombre(nombre, url)
+    limpios = []
+    for e in errores:
+        cifra = re.search(r"cifra '(\d+)'", e or "")
+        if cifra and cifra.group(1) not in cuerpo:
+            continue
+        if "nombre del cliente" in (e or "") and corto and perfil_redes._n(corto) in perfil_redes._n(cuerpo):
+            continue
+        limpios.append(e)
+    estado = fila.get("estado") or ""
+    if estado == "requiere_revision" and not limpios:
+        estado = "borrador"
+    return {**fila, "nombre": nombre, "cuerpo": cuerpo,
+            "errores_validacion": limpios, "estado": estado}
+
+
 def agrupar(filas):
     """Un bloque por persona, el más reciente primero. No ordena por nombre."""
     grupos = {}
     for fila in filas:
+        fila = _fila_visible(fila)
         clave = fila.get("nombre") or ""
         marca = _marca_tiempo(fila.get("creado_en"))
         if clave not in grupos:

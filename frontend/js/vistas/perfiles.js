@@ -1,5 +1,5 @@
 // Perfiles públicos autorizados: quién autorizó, lectura, revisión de hechos, redes y vínculo con clientes.
-import { del, get, post, put } from "../api.js";
+import { del, get, post, put, sesion } from "../api.js";
 import { vistaMensajes } from "./mensajes_prueba.js";
 import { abrirCliente, dato } from "../componentes.js";
 import { seguirTarea } from "../tarea.js?v=20261104lote2";
@@ -9,6 +9,37 @@ import {
 } from "../ui.js";
 
 let pestañaActiva = "hechos";
+
+const RUIDO_NOMBRE = /^(n\/a|na|publicaci[oó]n|linkedin|perfil|sin nombre|feed|actividad)$/i;
+
+function nombreDesdeUrl(url) {
+  try {
+    const u = new URL(url);
+    const partes = u.pathname.split("/").filter(Boolean);
+    let slug = "";
+    if (partes[0] === "in" && partes[1]) slug = decodeURIComponent(partes[1]);
+    else if (partes[0] && !["profile.php", "p", "reel", "reels"].includes(partes[0])) {
+      slug = decodeURIComponent(String(partes[0]).replace(/^@/, ""));
+    }
+    slug = slug.replace(/[-_.]+/g, " ").replace(/\b\d{3,}\b/g, " ").trim();
+    const palabras = slug.split(/\s+/).filter((p) => p.length > 1 && !/^\d+$/.test(p));
+    if (!palabras.length) return "";
+    if (palabras.length < 2 && !(u.hostname || "").includes("linkedin")) return "";
+    return palabras.map((p) => p[0].toUpperCase() + p.slice(1)).join(" ");
+  } catch {
+    return "";
+  }
+}
+
+function nombrePersona(x) {
+  const n = String((x && x.nombre) || "").trim();
+  if (n && !RUIDO_NOMBRE.test(n) && !/^https?:/i.test(n)) return n;
+  return nombreDesdeUrl(x && (x.fuente_url || x.url || x.perfil)) || n || "Sin nombre";
+}
+
+function etiquetaPersona(x) {
+  return `${nombrePersona(x)} · ${x && x.clave_cliente ? "Vinculado" : "Sin vincular"}`;
+}
 
 function mostrarLog(zona, r) {
   const lineas = (r.log || "").split("\n").filter(Boolean);
@@ -99,10 +130,7 @@ function mostrarRecomendaciones(res, zona) {
     info.edad ? h("div", {}, info.edad) : null,
     info.logros ? h("div", {}, info.logros) : null,
     info.resumen_red ? h("div", {}, info.resumen_red) : null,
-    info.paginas_seguidas ? h("div", { class: "muted pequeño" }, info.paginas_seguidas) : null,
-    info.interacciones ? h("div", { class: "muted pequeño" }, info.interacciones) : null,
     info.en_x_desde ? h("div", { class: "muted pequeño" }, info.en_x_desde) : null,
-    info.seguidores ? h("div", { class: "muted pequeño" }, `${info.seguidores} amigos/seguidores`) : null,
     info.privado ? alerta("La cuenta es privada para esta sesión: se guardó la ficha visible y no se leyeron publicaciones.", "warn") : null,
     res.temas_del_perfil && Object.keys(res.temas_del_perfil).length
       ? h("div", {}, `Temas desde la ficha: ${Object.entries(res.temas_del_perfil).map(([t, n]) => `${t} (${n})`).join(", ")}`) : null) : null;
@@ -128,7 +156,7 @@ function mostrarRecomendaciones(res, zona) {
 function mostrarLectura(res, zona) {
   const lista = (res && res.resultados) || [];
   if (!lista.length) {
-    zona.replaceChildren(alerta("No se leyó ningún perfil. Pega las URLs en Redes (LinkedIn, Facebook, Instagram o X), una por línea.", "warn"));
+    zona.replaceChildren(alerta("No se leyó ningún perfil. Pega las URLs en Redes (LinkedIn, Facebook, Instagram, X o Substack), una por línea.", "warn"));
     return;
   }
   zona.replaceChildren(h("div", { class: "pila" }, lista.map((item) => {
@@ -173,14 +201,86 @@ function copiarTexto(texto, ok = "Copiado.") {
   toast("No se pudo copiar.", "error");
 }
 
+function claseReaccion(r) {
+  return /enoja|entristece/i.test(String(r || "")) ? "warn" : "ok";
+}
+
+function tonoComentarioVista(t) {
+  const s = String(t || "").toLowerCase();
+  if (/estafa|horrible|pésimo|pesimo|odio|queja|reclamo|no sirve|mentira|rabia|enoj|no recomiendo|mala atenci/.test(s)) return "neg";
+  if (/gracias|excelente|recomiendo|felicit|genial|me interesa|quiero saber|información|informacion|muy bueno/.test(s)) return "pos";
+  return "";
+}
+
 function badgesInteraccion(p) {
-  const pos = p.reacciones_pos || p.likes;
-  return [
-    p.comentarios ? badge(`${num(p.comentarios)} comentario(s)`, "ok") : null,
-    p.compartidos ? badge(`${num(p.compartidos)} compartido(s)`, "info") : null,
-    pos ? badge(`${num(pos)} reacción(es) +`, "ok") : null,
-    p.reacciones_neg ? badge(`${num(p.reacciones_neg)} reacción(es) −`, "warn") : null,
-  ];
+  const reacs = [...new Set((p.reacciones || []).filter(Boolean))];
+  const comentarios = textosComentario(p);
+  const badges = reacs.map((r) => badge(r, claseReaccion(r)));
+  if (p.compartidos) badges.push(badge(`${num(p.compartidos)} compartido(s)`, "info"));
+  if (!reacs.length) {
+    const pos = p.reacciones_pos || p.likes;
+    if (pos) badges.push(badge("Me gusta", "ok"));
+    if (p.reacciones_neg) badges.push(badge("Me enoja", "warn"));
+  }
+  if (comentarios.length) badges.push(badge(`${num(comentarios.length)} comentario(s)`, "ok"));
+  else if (p.comentarios) badges.push(badge(`${num(p.comentarios)} comentario(s)`, "ok"));
+  return badges;
+}
+
+function textosComentario(p) {
+  const nombre = String(p.nombre || "").trim().toLowerCase();
+  return (p.textos || []).filter((t) => {
+    const s = String(t || "").trim();
+    if (!s) return false;
+    const bajo = s.toLowerCase();
+    if (nombre && (bajo === nombre || (nombre.startsWith(bajo) && bajo.length >= 4))) return false;
+    if (/^(hace\s+)?\d+\s*(min|h|d|sem|semana|mes|año)/i.test(s)) return false;
+    return true;
+  });
+}
+
+function bloqueInteraccion(p) {
+  const comentarios = textosComentario(p);
+  const reacs = [...new Set((p.reacciones || []).filter(Boolean))];
+  const partes = [];
+  if (reacs.length) {
+    partes.push(h("div", { class: "fila", style: { flexWrap: "wrap", gap: "6px", alignItems: "center" } },
+      h("span", { class: "muted pequeño" }, "Reaccionó:"),
+      ...reacs.map((r) => badge(r, claseReaccion(r)))));
+  }
+  if (comentarios.length) {
+    partes.push(h("div", { class: "pila-sm" },
+      h("strong", { class: "pequeño" }, "Qué comentó"),
+      ...comentarios.map((t) => {
+        const tono = tonoComentarioVista(t);
+        return h("div", { class: `comentario-cita${tono ? ` ${tono}` : ""}` },
+          h("div", { class: "item-texto" }, `«${t}»`),
+          tono ? h("span", { class: "muted pequeño" }, tono === "neg" ? "Tono negativo" : "Tono positivo") : null);
+      })));
+  } else if (p.comentarios) {
+    partes.push(h("p", { class: "muted pequeño" }, "Comentó, pero Facebook no dejó leer el texto."));
+  }
+  return partes.length ? h("div", { class: "pila-sm" }, ...partes) : null;
+}
+
+async function eliminarPersonaUrl(p, recargar) {
+  const url = p.perfil || p.url || "";
+  if (!url) { toast("No hay URL para quitar.", "error"); return; }
+  if (!await confirmar("¿Quitar de la lista?", `${p.nombre || "Esta persona"} sale de posibles vínculos y de las URLs. Lo que ya se leyó de su ficha no se borra.`, { boton: "Quitar", peligro: true })) return;
+  await del(`/api/facebook/pagina/persona?url=${encodeURIComponent(url)}`);
+  toast("Quitada de la lista.");
+  recargar();
+}
+
+function extraerPerfilUrl(boton, url, zonaTarea) {
+  if (!url) { toast("No hay URL de perfil.", "error"); return; }
+  conBoton(boton, () => post("/api/perfiles/lote", { urls: [url], max_posts: 5 })).then((r) => {
+    if (r && r.tarea) {
+      zonaTarea.prepend(
+        vigilarLogin(r.tarea.id),
+        seguirTarea(r.tarea, { alTerminar: (res, z) => mostrarLectura(res, z) }));
+    }
+  });
 }
 
 function vistaPaginaFb() {
@@ -199,24 +299,24 @@ function vistaPaginaFb() {
   const zonaTareaGen = h("div", { class: "pila" });
 
   function tarjeta(p) {
-    const comentarios = (p.textos || []).filter(Boolean);
+    const bLeer = h("button", { class: "btn btn-sm", title: "Scrapear este perfil" }, icono("play"), "Analizar perfil");
+    const bQuitar = h("button", { class: "btn btn-sm btn-fantasma", title: "Quitar de la lista" }, icono("trash"), "Quitar");
+    bLeer.addEventListener("click", () => extraerPerfilUrl(bLeer, p.perfil, zonaTarea));
+    bQuitar.addEventListener("click", () => eliminarPersonaUrl(p, cargar));
     return h("div", { class: "item", style: { gridTemplateColumns: "1fr" } },
       h("div", { class: "pila-sm" },
         h("div", { class: "item-cab" },
           h("strong", {}, p.nombre || "Sin nombre"),
           p.nueva ? badge("Nueva", "ok") : null,
           ...badgesInteraccion(p),
-          p.pagina_nombre ? h("span", { class: "muted pequeño" }, p.pagina_nombre) : null),
+          p.pagina_nombre ? h("span", { class: "muted pequeño" }, p.pagina_nombre) : null,
+          h("span", { class: "espaciador" }), bLeer, bQuitar),
         h("a", { href: p.perfil, target: "_blank", rel: "noopener noreferrer", class: "pequeño fila", style: { gap: "4px" } },
           icono("external"), p.perfil || "Sin enlace de perfil"),
         p.contacto ? h("div", {}, p.contacto) : null,
         p.ficha ? h("div", { class: "muted pequeño" }, p.ficha) : null,
-        (p.reacciones || []).length ? h("div", { class: "muted pequeño" }, `Reacciones: ${(p.reacciones || []).join(", ")}`) : null,
-        comentarios.length
-          ? h("div", { class: "pila-sm" }, h("strong", { class: "pequeño" }, "Comentarios"),
-            ...comentarios.map((t) => h("div", { class: "item-texto" }, t)))
-          : null,
-        p.acercamiento ? h("div", {}, p.acercamiento) : null));
+        bloqueInteraccion(p),
+        p.acercamiento ? h("div", { class: "muted pequeño" }, p.acercamiento) : null));
   }
 
   function mostrarResultado(res, zona) {
@@ -228,7 +328,7 @@ function vistaPaginaFb() {
     const omitidas = num(res.omitidas_ya_en_base);
     zona.replaceChildren(h("div", { class: "pila" },
       alerta(`Se leyeron ${num(res.publicaciones)} publicación(es) de ${res.pagina_nombre || "la página"}. ${num(res.nuevas != null ? res.nuevas : personas.length)} persona(s) nuevas. ${num(res.urls_conservadas || res.guardados)} URL(s) conservadas. Se omitieron ${omitidas} fichas que ya estaban. Todas las URLs siguen en «URLs perfiles».`, "ok"),
-      personas.length ? h("div", { class: "items" }, personas.map(tarjeta))
+      personas.length ? h("div", { class: "items lista-scroll" }, personas.map(tarjeta))
         : vacio("No apareció nadie nuevo en comentarios ni reacciones. Las personas de esta pasada ya estaban en la base.", "check")));
     cargar();
   }
@@ -241,7 +341,7 @@ function vistaPaginaFb() {
       const r = await get(`/api/facebook/pagina${q}`);
       const personas = (r && r.personas) || [];
       zonaLista.replaceChildren(personas.length
-        ? h("div", { class: "items" }, personas.map(tarjeta))
+        ? h("div", { class: "items lista-scroll" }, personas.map(tarjeta))
         : vacio("Aún no hay interactuantes. Extrae la página MAPFRE (o pega otra URL).", "users"));
     } catch (e) {
       zonaLista.replaceChildren(errorCaja(e, cargar));
@@ -286,7 +386,7 @@ function vistaPaginaFb() {
       const r = await get("/api/perfiles/recopilar");
       const ps = (r && r.perfiles) || [];
       zonaGen.replaceChildren(ps.length
-        ? h("div", { class: "items" }, ps.map((p) => {
+        ? h("div", { class: "items lista-scroll" }, ps.map((p) => {
           const x = h("button", { class: "btn btn-sm btn-fantasma", onclick: async () => {
             await del(`/api/perfiles/recopilar?url=${encodeURIComponent(p.url)}`);
             pintarGen();
@@ -356,6 +456,7 @@ function vistaPaginaFb() {
       h("div", { class: "fila" }, bAddGen, bLeerGen),
       zonaTareaGen, zonaGen),
     h("h3", {}, "Quién interactuó"),
+    alerta("Esta lista no se borra sola: baja con la barra para ver a todos. Quita a alguien solo con el botón. El comentario aparece textual y la reacción con su nombre (Me gusta, Me encanta, Me enoja…).", "info"),
     zonaLista);
 }
 
@@ -371,8 +472,9 @@ function vistaUrlsPagina() {
     if (r) toast(`${num(r.n)} perfil(es) en la lista general.`);
   });
 
+  const zonaTarea = h("div", { class: "pila" });
+
   function fila(p) {
-    const comentarios = (p.textos || []).filter(Boolean);
     const bUno = h("button", { class: "btn btn-sm btn-fantasma", title: "Copiar URL" }, icono("copy"), "Copiar");
     bUno.addEventListener("click", (ev) => { ev.preventDefault(); copiarTexto(p.perfil, "URL copiada."); });
     const bUnoGen = h("button", { class: "btn btn-sm btn-fantasma", title: "Añadir a perfiles generales" }, icono("plus"));
@@ -381,30 +483,57 @@ function vistaUrlsPagina() {
       const r = await post("/api/perfiles/recopilar", { url: p.perfil, nombre: p.nombre || "", origen: p.pagina_nombre || "pagina" });
       if (r && r.n) toast("Añadido a perfiles generales.");
     });
+    const bLeer = h("button", { class: "btn btn-sm", title: "Scrapear este perfil" }, icono("play"), "Analizar");
+    bLeer.addEventListener("click", (ev) => { ev.preventDefault(); extraerPerfilUrl(bLeer, p.perfil, zonaTarea); });
+    const bQuitar = h("button", { class: "btn btn-sm btn-fantasma", title: "Quitar de la lista" }, icono("trash"));
+    bQuitar.addEventListener("click", async (ev) => {
+      ev.preventDefault();
+      if (p.recopilar) {
+        await del(`/api/perfiles/recopilar?url=${encodeURIComponent(p.perfil || "")}`);
+        toast("Quitada de URLs.");
+        cargar();
+        return;
+      }
+      eliminarPersonaUrl(p, cargar);
+    });
     return h("div", { class: "item", style: { gridTemplateColumns: "1fr" } },
       h("div", { class: "pila-sm" },
         h("div", { class: "item-cab" },
           h("strong", {}, p.nombre || "Sin nombre"),
           ...badgesInteraccion(p),
           p.pagina_nombre ? h("span", { class: "muted pequeño" }, p.pagina_nombre) : null,
-          h("span", { class: "espaciador" }), bUnoGen, bUno),
+          h("span", { class: "espaciador" }), bLeer, bUnoGen, bUno, bQuitar),
         h("a", { href: p.perfil, target: "_blank", rel: "noopener noreferrer", class: "fila", style: { gap: "6px" } },
           icono("external"), p.perfil || "Sin URL"),
-        comentarios.length
-          ? h("div", { class: "pila-sm" }, ...comentarios.map((t) => h("div", { class: "item-texto" }, t)))
-          : null));
+        bloqueInteraccion(p)));
   }
 
   async function cargar() {
     zona.replaceChildren(cargando());
     try {
-      const r = await get("/api/facebook/pagina");
+      const [r, rec] = await Promise.all([
+        get("/api/facebook/pagina"),
+        get("/api/perfiles/recopilar").catch(() => ({ perfiles: [] })),
+      ]);
       const personas = ((r && r.personas) || []).filter((p) => p.perfil);
-      urls = [...new Set(personas.map((p) => p.perfil))];
+      const otras = ((rec && rec.perfiles) || []).map((p) => ({
+        perfil: p.url, nombre: p.nombre, red: p.red, origen: p.origen,
+        pagina_nombre: p.origen, recopilar: true,
+      }));
+      urls = [...new Set([...personas.map((p) => p.perfil), ...otras.map((p) => p.perfil)].filter(Boolean))];
       bCopiar.disabled = bAGen.disabled = !urls.length;
-      zona.replaceChildren(personas.length
-        ? h("div", { class: "items" }, personas.map(fila))
-        : vacio("Todavía no hay URLs. En «Página Facebook» extrae MAPFRE u otra aseguradora; aquí se conservan todas.", "link"));
+      const bloques = [];
+      if (otras.length) {
+        bloques.push(h("h4", {}, "Encontrados en otras redes"),
+          h("div", { class: "items lista-scroll" }, otras.map(fila)));
+      }
+      if (personas.length) {
+        bloques.push(h("h4", {}, "Páginas de seguros"),
+          h("div", { class: "items lista-scroll" }, personas.map(fila)));
+      }
+      zona.replaceChildren(bloques.length
+        ? h("div", { class: "pila" }, ...bloques)
+        : vacio("Todavía no hay URLs. Salen de páginas de seguros y de perfiles de otras redes encontrados al scrapear.", "link"));
     } catch (e) {
       bCopiar.disabled = bAGen.disabled = true;
       zona.replaceChildren(errorCaja(e, cargar));
@@ -414,9 +543,9 @@ function vistaUrlsPagina() {
   cargar();
   return h("div", { class: "pila" },
     h("h3", {}, "URLs de perfiles"),
-    alerta("Se conservan todos los perfiles de MAPFRE (y de las otras páginas que extraigas). El comentario va acotado. Puedes copiar las URLs o pasarlas a «Perfiles generales» para leer sus interacciones.", "info"),
+    alerta("Aquí van los perfiles para revisar: los de páginas de seguros y los de otras redes que aparecen al scrapear a alguien. Las páginas que la persona sigue están en «Seguidores e intereses».", "info"),
     h("div", { class: "barra-acciones" }, bAGen, bCopiar),
-    zona);
+    zonaTarea, zona);
 }
 
 // ------------------------------------------------------------------ publicaciones de LinkedIn
@@ -515,7 +644,7 @@ function vistaLinkedin() {
     if (r) lanzarSesion(r.tarea);
   });
   // Si ya había una extracción corriendo (p. ej. cambiaste de pestaña), se retoma.
-  const loteUrls = h("textarea", { rows: 8, placeholder: "https://www.instagram.com/usuario/\nhttps://x.com/usuario\nhttps://www.facebook.com/usuario\nhttps://www.linkedin.com/in/usuario/\nUna URL por línea, entre 20 y 50." });
+  const loteUrls = h("textarea", { rows: 8, placeholder: "https://www.instagram.com/usuario/\nhttps://x.com/usuario\nhttps://www.facebook.com/usuario\nhttps://www.linkedin.com/in/usuario/\nhttps://substack.com/@usuario\nhttps://www.reddit.com/user/usuario\nUna URL por línea, entre 20 y 50." });
   const maxLote = h("input", { type: "number", value: "10", min: "1", max: "10", style: { width: "90px" } });
   const bLote = h("button", { class: "btn btn-primario" }, icono("play"), "Extraer lote");
   const zonaLote = h("div", { class: "pila" });
@@ -610,11 +739,46 @@ function vistaLinkedin() {
   get("/api/tareas").then((ts) => ts.filter((t) => t.tipo === "extraccion_x" && t.estado === "en_curso")
     .forEach(lanzarX)).catch(() => {});
 
+  // ---------------- Substack con mi sesión
+  const urlSs = h("input", { type: "text", placeholder: "https://substack.com/@usuario o https://usuario.substack.com/" });
+  const maxSs = h("input", { type: "number", value: "10", min: "1", max: "10", style: { width: "90px" } });
+  const bExtraerSs = h("button", { class: "btn btn-primario" }, icono("play"), "Extraer de Substack");
+  const zonaSs = h("div", { class: "pila" });
+  function lanzarSs(tarea) {
+    zonaSs.prepend(vigilarLogin(tarea.id, "/api/substack/actividad"),
+      seguirTarea(tarea, { alTerminar: (res, z) => mostrarRecomendaciones(res, z) }));
+  }
+  bExtraerSs.addEventListener("click", async () => {
+    const url = urlSs.value.trim();
+    if (!url) { toast("Pega la URL del perfil o newsletter de Substack.", "error"); urlSs.focus(); return; }
+    const r = await conBoton(bExtraerSs, () => post("/api/substack/actividad", { url, max_posts: topePosts(maxSs) }));
+    if (r) lanzarSs(r.tarea);
+  });
+  get("/api/tareas").then((ts) => ts.filter((t) => t.tipo === "extraccion_substack" && t.estado === "en_curso")
+    .forEach(lanzarSs)).catch(() => {});
+
+  const urlRd = h("input", { type: "text", placeholder: "https://www.reddit.com/user/usuario" });
+  const maxRd = h("input", { type: "number", value: "10", min: "1", max: "10", style: { width: "90px" } });
+  const bExtraerRd = h("button", { class: "btn btn-primario" }, icono("play"), "Extraer de Reddit");
+  const zonaRd = h("div", { class: "pila" });
+  function lanzarRd(tarea) {
+    zonaRd.prepend(vigilarLogin(tarea.id, "/api/reddit/actividad"),
+      seguirTarea(tarea, { alTerminar: (res, z) => mostrarRecomendaciones(res, z) }));
+  }
+  bExtraerRd.addEventListener("click", async () => {
+    const url = urlRd.value.trim();
+    if (!url) { toast("Pega la URL del perfil de Reddit.", "error"); urlRd.focus(); return; }
+    const r = await conBoton(bExtraerRd, () => post("/api/reddit/actividad", { url, max_posts: topePosts(maxRd) }));
+    if (r) lanzarRd(r.tarea);
+  });
+  get("/api/tareas").then((ts) => ts.filter((t) => t.tipo === "extraccion_reddit" && t.estado === "en_curso")
+    .forEach(lanzarRd)).catch(() => {});
+
   cargar();
   return h("div", { class: "pila" },
     h("div", { class: "card pila" },
       h("h3", {}, "Lote de perfiles (20 a 50)"),
-      alerta("Extraer lote lee únicamente las URLs que pegas (Instagram, Facebook, X o LinkedIn). Si hay una lectura de Personas autorizadas en curso, la detiene. El nombre sale de cada red y se registra al terminar. Publicaciones: de 1 a 10.", "info"),
+      alerta("En todas las redes se revisa: a quién sigue, intereses, publicaciones y reposts útiles para acercarnos, estado civil, hijos, estudios, empresa, y el salario solo si lo publica. El meme, el clima y el «feliz viernes» no entran. Publicaciones: de 1 a 10.", "info"),
       campo("URLs", loteUrls),
       h("div", { class: "fila", style: { alignItems: "flex-end" } },
         campo("Publicaciones a analizar (1 a 10)", maxLote),
@@ -652,6 +816,22 @@ function vistaLinkedin() {
         campo("Publicaciones (1 a 10)", maxX),
         bExtraerX),
       zonaX),
+    h("div", { class: "card pila" },
+      h("h3", {}, "Substack con mi sesión"),
+      alerta("Pega https://substack.com/@usuario o https://usuario.substack.com/. Se lee el nombre, la bio, posts propios y restacks. De cada foto se extrae el texto (si lo hay) y un resumen de qué contiene, para afinar gustos e intereses. Si es de pago, solo la vista previa. Si Substack pide entrar, Chrome queda abierto: inicia sesión y pulsa «Ya inicié sesión, continuar».", "info"),
+      h("div", { class: "fila", style: { alignItems: "flex-end" } },
+        h("div", { style: { flex: "1", minWidth: "260px" } }, campo("Perfil o newsletter de Substack", urlSs)),
+        campo("Publicaciones (1 a 10)", maxSs),
+        bExtraerSs),
+      zonaSs),
+    h("div", { class: "card pila" },
+      h("h3", {}, "Reddit con mi sesión"),
+      alerta("Pega https://www.reddit.com/user/usuario. Se lee el nombre, la bio, posts y comentarios. Solo entra lo que ayuda a ofertar un seguro (familia, estudios, finanzas, moto, ciudad). Memes y karma se descartan. Si Reddit pide entrar, Chrome queda abierto: inicia sesión y pulsa «Ya inicié sesión, continuar».", "info"),
+      h("div", { class: "fila", style: { alignItems: "flex-end" } },
+        h("div", { style: { flex: "1", minWidth: "260px" } }, campo("Perfil de Reddit", urlRd)),
+        campo("Publicaciones (1 a 10)", maxRd),
+        bExtraerRd),
+      zonaRd),
     alerta("Se abre el perfil público. El nombre se lee de LinkedIn y la persona queda registrada. Si LinkedIn pide iniciar sesión, esa página no se lee. Política y religión se descartan y no se guardan; el salario sí cuenta, como señal de ingresos. El interés aprobado pasa al perfil; el resto no.", "info"),
     h("div", { class: "fila" }, bLeer),
     zonaTareas,
@@ -662,11 +842,48 @@ function vistaLinkedin() {
 }
 
 // ------------------------------------------------------------------ revisión de contenido (publicaciones de todas las redes)
+const _fotosCache = new Map();
+
+function cargarFoto(ident, img) {
+  if (!ident || !img) return;
+  if (_fotosCache.has(ident)) {
+    img.src = _fotosCache.get(ident);
+    return;
+  }
+  const s = sesion.get();
+  fetch(`/api/perfiles/contenido/imagen/${ident}`, {
+    headers: s?.token ? { Authorization: `Bearer ${s.token}` } : {},
+  }).then((r) => (r.ok ? r.blob() : Promise.reject())).then((blob) => {
+    const url = URL.createObjectURL(blob);
+    _fotosCache.set(ident, url);
+    img.src = url;
+  }).catch(() => { img.style.display = "none"; });
+}
+
+function ampliarFoto(src, alt) {
+  const fondo = h("div", { class: "foto-fondo", onclick: () => fondo.remove() },
+    h("img", { src, alt: alt || "Foto de la publicación", class: "foto-grande" }));
+  document.body.append(fondo);
+}
+
+function galeria(imagenes) {
+  const fotos = (imagenes || []).filter((x) => x && x.id);
+  if (!fotos.length) return null;
+  return h("div", { class: "fotos-pub" }, fotos.slice(0, 4).map((im) => {
+    const el = h("img", {
+      alt: im.alt || "Foto de la publicación", class: "foto-pub",
+      onclick: (e) => { e.stopPropagation(); if (el.src) ampliarFoto(el.src, im.alt); },
+    });
+    cargarFoto(im.id, el);
+    return el;
+  }));
+}
+
 function etiquetaTipo(tipo) {
   const t = String(tipo || "publicacion").toLowerCase();
-  if (t === "compartida" || t === "repost") return "Repost";
-  if (t === "respuesta") return "Respuesta";
-  if (t === "comentario") return "Comentario";
+  if (t === "compartida" || t === "repost" || t === "restack") return "Restack / repost";
+  if (t === "respuesta") return "Mensaje";
+  if (t === "comentario" || t === "mensaje") return "Mensaje";
   if (t === "reaccion") return "Reacción";
   if (t === "logro") return "Logro publicado";
   return "Publicación";
@@ -693,13 +910,14 @@ function vistaContenido() {
     return h("div", { class: "item", style: { gridTemplateColumns: "1fr" } },
       h("div", { class: "pila-sm" },
         h("div", { class: "item-cab" },
-          h("strong", {}, p.nombre || "Sin nombre"),
+          h("strong", {}, nombrePersona(p)),
           estadoB,
           badge(p.red || "red"),
           p.tiene_imagenes ? badge(p.n_imagenes > 1 ? `${p.n_imagenes} imágenes` : "Con imagen", "ok") : null,
           p.tiempo ? h("span", { class: "muted pequeño" }, p.tiempo) : null,
           h("span", { class: "espaciador" })),
         p.resumen ? h("div", { class: "muted pequeño" }, p.resumen) : null,
+        galeria(p.imagenes),
         h("div", { class: "item-texto" }, p.texto || "Contenido no elegible."),
         h("div", { class: "fila" },
           enlace ? h("a", { href: enlace, target: "_blank", rel: "noopener noreferrer", class: "pequeño fila", style: { gap: "4px" } }, icono("external"), p.url && p.url !== p.fuente_url ? "Ver publicación" : "Perfil") : null,
@@ -733,8 +951,10 @@ function vistaContenido() {
         { valor: "facebook", texto: "Facebook" },
         { valor: "instagram", texto: "Instagram" },
         { valor: "x", texto: "X" },
+        { valor: "substack", texto: "Substack" },
+        { valor: "reddit", texto: "Reddit" },
       ], redF, (v) => { redF = v; cargar(); })),
-    alerta("Publicaciones y comentarios de quienes se scrapearon. Si hay caption, va acotado; si hay imagen, se indica; y se resume de qué trata. La ficha (estudios, cargos) sigue en «Revisión de hechos».", "info"),
+    alerta("Aquí van publicaciones y mensajes (comentarios), no la ficha. Trabajo, experiencia, estudios, cursos, descripción e información quedan en «Revisión de hechos».", "info"),
     h("div", { class: "barra-acciones" }, contador),
     zona);
 }
@@ -799,8 +1019,8 @@ function vistaHechos(alCambiar, grupo = "ficha") {
     ] : null;
     fila.append(h("div", {}, check), h("div", { class: "pila-sm" },
       h("div", { class: "item-cab" },
-        h("strong", {}, x.titulo), badge(x.categoria, x.categoria === "Producto sugerido" ? "primario" : x.categoria === "Contacto" ? "warn" : "info"),
-        badge(x.red), h("span", { class: "muted pequeño" }, `${x.nombre}${x.clave_cliente ? ` · clave ${x.clave_cliente}` : " · sin vincular"} · #${x.id_hecho}`),
+        h("strong", {}, x.titulo), badge(x.categoria, x.categoria === "Producto sugerido" ? "primario" : x.categoria === "Hijos" ? "ok" : x.categoria === "Indicio de hijos" || x.categoria === "Contacto" ? "warn" : "info"),
+        badge(x.red), h("span", { class: "muted pequeño" }, etiquetaPersona(x)),
         h("span", { class: "espaciador" }), estadoB),
       h("div", { class: "item-texto" }, x.contenido),
       h("div", { class: "fila" },
@@ -816,11 +1036,11 @@ function vistaHechos(alCambiar, grupo = "ficha") {
       const filas = await post("/api/perfiles/hechos/lista", {
         nombre: persona.value, estado: estadoF, grupo, limite: esRed ? 1000 : 500,
       });
-      const catsRed = new Set(["Seguidor", "Sigue a", "Repost", "Gusto"]);
-      const catsCont = new Set(["Publicacion", "Comentario", "Reaccion", "Resumen de contenido"]);
+      const catsRed = new Set(["Seguidor", "Sigue a", "Repost", "Gusto", "Interacciones", "Paginas seguidas", "Interes"]);
+      const catsCont = new Set(["Publicacion", "Comentario", "Mensaje", "Reaccion", "Resumen de contenido"]);
       const visibles = (filas || []).filter((x) => esRed
         ? catsRed.has(x.categoria)
-        : !catsRed.has(x.categoria) && !catsCont.has(x.categoria));
+        : !catsRed.has(x.categoria) && !catsCont.has(x.categoria) && x.categoria !== "Otra red");
       total = visibles.length;
       zona.replaceChildren(visibles.length ? h("div", { class: "items" }, visibles.map(item))
         : vacio(estadoF === "pendiente"
@@ -842,27 +1062,41 @@ function vistaHechos(alCambiar, grupo = "ficha") {
       segmentado([{ valor: "pendiente", texto: "Pendientes" }, { valor: "aprobado", texto: "Aprobados" }, { valor: "descartado", texto: "Descartados" }, { valor: "todos", texto: "Todos" }],
         estadoF, (v) => { estadoF = v; cargar(); })),
     alerta(esRed
-      ? "Aparecen los gustos (finanzas, deporte, moda, nutrición, etc.) según páginas que sigue e interacciones, más seguidores, cuentas seguidas y reposts. Aprueba cada uno para usarlo al acercarte o recomendar."
-      : "Solo información de la ficha: estudios, cargos, logros, familia, ubicación y contacto. Lo que la persona publica está en «Revisión contenido». Un «Producto sugerido» es una pista para el asesor.", "info"),
+      ? "Seguidores, cuentas o páginas que sigue, quienes comentan e intereses. No forman la ficha: la ficha está en «Revisión de hechos»."
+      : "Solo datos de esta persona para armar el perfil (trabajo, estudios, familia, ubicación). Los links de otros perfiles van en «URLs perfiles»; las páginas que sigue, en «Seguidores e intereses». Lo que publica, en «Revisión contenido».", "info"),
     h("div", { class: "barra-acciones" }, contador, h("span", { class: "espaciador" }), bTodos, bDescartar, bAprobar),
     zonaLog, zona);
 }
 
 // ------------------------------------------------------------------ vincular, completar, incorporar
 function vistaVincular() {
-  const lista = h("div", {}, cargando());
+  let mini = "oferta";
+  const cuerpo = h("div");
+  const tabs = pestañas([
+    { id: "oferta", texto: "Vincular y ofrecer" },
+    { id: "posibles", texto: "Posibles vínculos" },
+  ], mini, (id) => { mini = id; pintar(); });
+  function pintar() {
+    cuerpo.replaceChildren(mini === "posibles" ? vistaPosiblesVinculos() : vistaOferta());
+  }
+  pintar();
+  return h("div", { class: "pila" }, tabs.el, cuerpo);
+}
+
+function vistaOferta() {
+  const lista = h("div", { class: "lista-scroll" }, cargando());
   const detalle = h("div", { class: "detalle" }, h("div", { class: "card" }, vacio("Elige una persona para ver su oferta y vincularla con un cliente.", "idcard")));
   let elegido = null;
 
   async function cargarLista() {
     try {
-      const ps = await get("/api/perfiles/personas");
+      const ps = (await get("/api/perfiles/personas")).filter((p) => p.completo !== false);
       lista.replaceChildren(tabla([
         { titulo: "Persona", valor: (p) => [h("strong", {}, p.nombre), h("span", { class: "celda-sub" }, p.redes || "")] },
         { titulo: "Cliente", valor: (p) => (p.clave_cliente ? badge(p.clave_cliente, "ok") : badge("Sin vincular", "warn")) },
         { titulo: "Aprobados", valor: (p) => num(p.aprobados), clase: "num" },
         { titulo: "Por revisar", valor: (p) => num(p.pendientes), clase: "num" },
-      ], ps, { onFila: (p) => abrir(p.nombre), seleccion: (p) => p.nombre === elegido, vacioTexto: "Aún no hay perfiles leídos." }));
+      ], ps, { onFila: (p) => abrir(p.nombre), seleccion: (p) => p.nombre === elegido, vacioTexto: "Aún no hay perfiles con ficha completa. Las URLs de páginas están en «Posibles vínculos»." }));
     } catch (e) {
       lista.replaceChildren(errorCaja(e, cargarLista));
     }
@@ -881,6 +1115,53 @@ function vistaVincular() {
 
   cargarLista();
   return h("div", { class: "dividido" }, lista, detalle);
+}
+
+function vistaPosiblesVinculos() {
+  const zona = h("div", { class: "pila" }, cargando());
+  const zonaTarea = h("div", { class: "pila" });
+
+  function fila(p) {
+    const bLeer = h("button", { class: "btn btn-sm btn-primario" }, icono("play"), "Analizar perfil");
+    bLeer.addEventListener("click", () => extraerPerfilUrl(bLeer, p.perfil, zonaTarea));
+    const bQuitar = h("button", { class: "btn btn-sm btn-fantasma" }, icono("trash"), "Quitar");
+    bQuitar.addEventListener("click", () => eliminarPersonaUrl(p, cargar));
+    return h("div", { class: "item", style: { gridTemplateColumns: "1fr" } },
+      h("div", { class: "pila-sm" },
+        h("div", { class: "item-cab" },
+          h("strong", {}, p.nombre || "Sin nombre"),
+          ...badgesInteraccion(p),
+          p.de_colombia ? badge("Colombia", "ok") : null,
+          p.pagina_nombre || p.origen ? h("span", { class: "muted pequeño" }, p.pagina_nombre || p.origen) : null,
+          h("span", { class: "espaciador" }), bLeer, bQuitar),
+        h("a", { href: p.perfil, target: "_blank", rel: "noopener noreferrer", class: "pequeño fila", style: { gap: "4px" } },
+          icono("external"), p.perfil || "Sin URL"),
+        bloqueInteraccion(p)));
+  }
+
+  async function cargar() {
+    zona.replaceChildren(cargando());
+    try {
+      let personas = [];
+      try {
+        const r = await get("/api/perfiles/posibles-vinculos");
+        personas = (r && r.personas) || [];
+      } catch {
+        const r = await get("/api/facebook/pagina");
+        personas = ((r && r.personas) || []).filter((p) => p.perfil);
+      }
+      zona.replaceChildren(personas.length
+        ? h("div", { class: "items lista-scroll" }, personas.map(fila))
+        : vacio("Todavía no hay personas de páginas de seguros. Extrae MAPFRE u otra aseguradora en «Página Facebook».", "users"));
+    } catch (e) {
+      zona.replaceChildren(errorCaja(e, cargar));
+    }
+  }
+
+  cargar();
+  return h("div", { class: "pila" },
+    alerta("Aquí están las personas que interactuaron en las páginas de seguros (MAPFRE, Sura…). Solo quedan quienes viven o son de Colombia. Puedes analizar su perfil o quitarlas a mano. La lista no se borra sola: baja con la barra para verlas todas.", "info"),
+    zonaTarea, zona);
 }
 
 function fichaPersona(d, refrescar) {
@@ -916,10 +1197,11 @@ function fichaPersona(d, refrescar) {
       h("div", { class: "fila" }, h("h2", { style: { flex: "1" } }, d.nombre),
         d.clave_cliente ? badge(`clave ${d.clave_cliente}`, "ok") : badge("Sin vincular", "warn")),
       aprobados.length ? null : alerta("Esta persona no tiene hechos aprobados todavía. Apruébalos en «Revisión de hechos» antes de vincular o completar.", "warn"),
-      h("h3", {}, "Lo que dicen los hechos aprobados"),
+      h("h3", {}, "Resumen"),
       h("div", { class: "datos-grid" },
         dato("Producto para ofrecer", datos.producto_interes || "Sin sugerencia aprobada"), dato("Ciudad", datos.ciudad),
-        dato("Profesión", datos.profesion), dato("Estudios", datos.universidad), dato("Correo", datos.correo), dato("Celular", datos.celular)),
+        dato("Profesión", datos.profesion), dato("Correo", datos.correo), dato("Celular", datos.celular)),
+      d.pendientes_ficha ? h("p", { class: "muted pequeño" }, `${d.pendientes_ficha} hecho(s) de ficha por revisar en «Revisión de hechos».`) : null,
       d.vinculado
         ? alerta([h("strong", {}, `Vinculado a ${d.vinculado.nombre}. `),
           canal ? `El asesor puede pedir: «mensaje de ${canal} para ${d.vinculado.nombre}».` : "El cliente no tiene correo ni celular válido: el asesor lo encuentra pero no puede armar el borrador. Usa «Completar vacíos» si el perfil trae contacto."], canal ? "ok" : "warn")
@@ -937,11 +1219,16 @@ function fichaPersona(d, refrescar) {
         : h("div", { class: "pila-sm" },
           h("p", { class: "muted" }, "Ese nombre no está en clientes. Puedes crearlo como prospecto con los datos aprobados."),
           h("div", { class: "fila", style: { alignItems: "flex-end" } }, h("div", { style: { flex: "1", minWidth: "220px" } }, campo("Producto de interés", producto)), bIncorporar))),
-    h("details", { class: "card" }, h("summary", {}, `Hechos (${d.hechos.length})`),
-      h("div", { class: "items", style: { marginTop: "10px" } }, d.hechos.map((x) => h("div", { class: "item", style: { gridTemplateColumns: "1fr" } },
-        h("div", {}, h("div", { class: "item-cab" }, badge(x.categoria, "info"), h("span", { class: "muted pequeño" }, x.red), h("span", { class: "espaciador" }),
-          x.activo ? badge("Aprobado", "ok") : x.descartado ? badge("Descartado") : badge("Pendiente", "warn")),
-        h("div", { class: "item-texto" }, x.contenido)))))));
+    h("div", { class: "card pila" },
+      h("h3", {}, "Ficha de la persona"),
+      h("p", { class: "muted pequeño" }, "Solo datos de la persona. Seguidores, cuentas seguidas, publicaciones, mensajes y comentarios están en sus propias pestañas."),
+      (d.ficha || []).length
+        ? (d.ficha || []).map((s) => h("div", { class: "pila-sm" },
+          h("h4", { style: { margin: "6px 0 0" } }, s.titulo),
+          h("ul", { class: "pequeño", style: { margin: "0", paddingLeft: "18px" } },
+            s.items.map((i) => h("li", { style: { marginBottom: "4px" } }, i.texto,
+              i.red ? h("span", { class: "muted" }, ` (${i.red})`) : null)))))
+        : vacio("Todavía no hay datos aprobados para mostrar en la ficha.", "idcard"))));
 }
 
 // ------------------------------------------------------------------ personas autorizadas (data/perfiles_autorizados.json)
@@ -975,7 +1262,7 @@ function vistaAutorizados() {
   function tarjeta(p, i) {
     const urls = h("div", { class: "pila-sm" });
     const pintarUrls = () => urls.replaceChildren(...p.urls.map((u, j) => h("div", { class: "fila" },
-      h("input", { type: "text", value: u, placeholder: "https://www.linkedin.com/in/…, facebook, instagram o x.com", style: { flex: "1" }, oninput: (e) => { p.urls[j] = e.target.value; marcar(); } }),
+      h("input", { type: "text", value: u, placeholder: "linkedin, facebook, instagram, x.com, substack.com/@ o reddit.com/user/", style: { flex: "1" }, oninput: (e) => { p.urls[j] = e.target.value; marcar(); } }),
       h("button", { class: "btn btn-fantasma btn-icono", title: "Quitar URL", onclick: () => { p.urls.splice(j, 1); marcar(); pintarUrls(); } }, icono("x")))),
     h("button", { class: "btn btn-sm btn-fantasma", style: { alignSelf: "flex-start" }, onclick: () => { p.urls.push(""); marcar(); pintarUrls(); } }, icono("plus"), "Agregar URL"));
     pintarUrls();
@@ -987,7 +1274,7 @@ function vistaAutorizados() {
         campo("Clave de cliente (opcional)", h("input", { type: "text", value: p.clave_cliente, oninput: (e) => { p.clave_cliente = e.target.value; marcar(); } }))),
       h("label", { class: "check" }, h("input", { type: "checkbox", checked: p.autorizado, onchange: (e) => { p.autorizado = e.target.checked; marcar(); } }), "La persona autorizó leer su perfil público"),
       campo("Texto de la autorización", h("textarea", { rows: 2, oninput: (e) => { p.autorizacion = e.target.value; marcar(); } }, p.autorizacion), "Cómo y cuándo autorizó (mínimo 15 caracteres)."),
-      h("div", { class: "campo" }, h("span", {}, "Perfiles públicos (LinkedIn, Instagram, Facebook, X, TikTok)"), urls),
+      h("div", { class: "campo" }, h("span", {}, "Perfiles públicos (LinkedIn, Instagram, Facebook, X, TikTok, Substack)"), urls),
       h("div", { class: "fila" }, bLeer, h("span", { class: "espaciador" }),
         h("button", { class: "btn btn-sm btn-peligro-suave", onclick: async () => {
           if (await confirmar("¿Quitar a esta persona?", `${p.nombre || "Esta persona"} saldrá del archivo de autorizados al guardar. Sus hechos ya leídos no se borran.`, { boton: "Quitar", peligro: true })) {

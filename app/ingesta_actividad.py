@@ -1,6 +1,7 @@
 """Pasa la extracción con sesión (Facebook / Instagram / LinkedIn / X) a las tablas que ya usa el modelo.
 
-La ficha y los productos sugeridos van a hechos_perfil (pendientes de revisión).
+La ficha clara (trabajo, estudios, estado civil, origen, dónde vive, edad) entra aprobada.
+Lo demás, incluidos los productos sugeridos, queda pendiente de revisión.
 Las publicaciones con tema del catálogo van a publicaciones_linkedin + intereses_linkedin;
 al aprobar un interés, se copia a hechos_perfil y el modelo lo lee.
 No se escriben CSV: el asesor y los borradores leen PostgreSQL.
@@ -32,9 +33,28 @@ def _campo(texto):
     return _deduplicar(t)
 
 
-def hechos_desde_info(info, posts=None):
-    """Ficha del scraper -> mismos fragmentos que la ingesta de perfiles."""
-    info = info or {}
+def _hechos_de_campo(hechos, blob, default):
+    """Parte un campo de ficha: cursos no van a estudios, empleos pasados no van a trabajo."""
+    from app.tipo_dato import eje_ficha
+
+    if not blob:
+        return
+    cubetas = {}
+    for frase in perfil_redes._oraciones(blob):
+        cat = eje_ficha(frase, seccion=default, default=default) or default
+        cubetas.setdefault(cat, []).append(frase)
+    for cat, partes in cubetas.items():
+        perfil_redes._agregar(hechos, cat, ". ".join(partes))
+
+
+def hechos_desde_info(info, posts=None, incluir_red=True):
+    """Ficha de la persona (trabajo, estudios, familia…).
+
+    Seguidores, seguidos, comentadores y páginas NO van en Revisión de hechos:
+    quedan en «Seguidores e intereses» si incluir_red=True.
+    """
+    from app import hijos
+    info = hijos.aplicar(info or {}, posts)
     hechos = []
     titular = _campo(info.get("titular"))
     if titular:
@@ -45,12 +65,13 @@ def hechos_desde_info(info, posts=None):
     ubicacion = _campo(info.get("ubicacion"))
     if ubicacion:
         perfil_redes._agregar(hechos, "Ubicacion", ubicacion)
-    trabajo = _campo(info.get("experiencia"))
-    if trabajo:
-        perfil_redes._agregar(hechos, "Trabajo", trabajo)
-    estudios = _campo(info.get("educacion"))
-    if estudios:
-        perfil_redes._agregar(hechos, "Estudios", estudios)
+    _hechos_de_campo(hechos, _campo(info.get("experiencia")), "Trabajo")
+    _hechos_de_campo(hechos, _campo(info.get("experiencia_pasada")), "Experiencia")
+    _hechos_de_campo(hechos, _campo(info.get("educacion")), "Estudios")
+    _hechos_de_campo(hechos, _campo(info.get("cursos")), "Cursos")
+    extra = _campo(info.get("informacion"))
+    if extra:
+        perfil_redes._agregar(hechos, "Informacion", extra)
     civil = _campo(info.get("estado_civil"))
     if civil:
         perfil_redes._agregar(hechos, "Estado civil", civil)
@@ -63,43 +84,57 @@ def hechos_desde_info(info, posts=None):
     familia = _campo(info.get("familia"))
     if familia:
         perfil_redes._agregar(hechos, "Familia", familia)
+    for hecho in hijos.hechos_de(info):
+        perfil_redes._agregar(hechos, hecho["categoria"], hecho["contenido"])
     edad = _campo(info.get("edad"))
     if edad:
         perfil_redes._agregar(hechos, "Edad", edad)
+    ingresos = _campo(info.get("ingresos"))
+    if ingresos:
+        perfil_redes._agregar(hechos, "Ingresos", ingresos)
     logros = _campo(info.get("logros"))
     if logros:
         perfil_redes._agregar(hechos, "Logros", logros)
-    interacciones = _campo(info.get("interacciones"))
-    if interacciones:
-        perfil_redes._agregar(hechos, "Interacciones", interacciones)
-    for item in info.get("otras_redes") or []:
-        nota = perfil_redes.nota_otra_red(item)
-        if nota:
-            perfil_redes._agregar(hechos, "Otra red", nota)
     cuenta, salida = {}, []
     for hecho in hechos:
         n = cuenta.get(hecho["categoria"], 0) + 1
         cuenta[hecho["categoria"]] = n
         titulo = hecho["categoria"] if n == 1 else f"{hecho['categoria']} ({n})"
         salida.append({**hecho, "titulo": titulo})
-    salida.extend(redes_seguidas.hechos_de_red(info, posts=posts))
+    if incluir_red:
+        salida.extend(redes_seguidas.hechos_de_red(info, posts=posts))
     return salida
 
 
 def _persona(persona, info, url):
+    crudo = ""
     if persona:
-        return {
-            "nombre": persona.get("nombre") or (info or {}).get("nombre") or url,
-            "clave_cliente": persona.get("clave_cliente") or None,
-        }
-    return {"nombre": (info or {}).get("nombre") or url, "clave_cliente": None}
+        crudo = persona.get("nombre") or (info or {}).get("nombre") or ""
+        clave = persona.get("clave_cliente") or None
+    else:
+        crudo = (info or {}).get("nombre") or ""
+        clave = None
+    return {"nombre": perfil_redes.nombre_de_perfil(crudo, url), "clave_cliente": clave}
+
+
+def _guardar_perfiles_encontrados(info, dueno=""):
+    """Otras redes ligadas van a URLs perfiles, no a Revisión de hechos."""
+    from app import facebook_pagina
+    origen = f"encontrado en {dueno}"[:80] if dueno else "otra red"
+    for item in (info or {}).get("otras_redes") or []:
+        url = (item or {}).get("url") or ""
+        if url:
+            try:
+                facebook_pagina.agregar_recopilar(url, origen=origen)
+            except Exception as e:
+                print(f"No se guardó la URL {url}: {e}")
 
 
 def persistir(persona, red, url, info, posts=None):
     """Escribe ficha, productos sugeridos y actividad en la base. Devuelve conteos.
 
     Guarda siempre, aunque la URL no esté en Personas autorizadas: hechos de
-    ficha, revisión de contenido y seguidores/intereses.
+    ficha (incluido el dato de hijos), revisión de contenido y seguidores/intereses.
     """
     asegurar_hechos()
     asegurar_actividad()
@@ -107,10 +142,18 @@ def persistir(persona, red, url, info, posts=None):
     from app.contenido import describir_publicacion, resumir_actividad
     blobs = [
         (info or {}).get("bio"), (info or {}).get("titular"), (info or {}).get("acerca"),
-        "\n".join((p.get("texto") or "") + " " + (p.get("enlaces") or "") for p in (posts or [])),
+        "\n".join(" ".join(p for p in (
+            (post.get("texto") or ""), (post.get("enlaces") or ""),
+            (post.get("texto_imagen") or ""), (post.get("descripcion_imagen") or ""),
+        ) if p) for post in (posts or [])),
     ]
+    from app.discernimiento import filtrar_posts
+    posts = filtrar_posts(posts)
     info = perfil_redes.anexar_otras_redes(info or {}, "\n".join(p for p in blobs if p), red, url)
+    _guardar_perfiles_encontrados(info, quien.get("nombre") or "")
     info = perfil_redes.aplicar_lo_publicado(info, posts)
+    from app import hijos
+    info = hijos.aplicar(info, posts)
     hechos = hechos_desde_info(info, posts)
     resumen_pub = resumir_actividad(posts)
     if resumen_pub:
@@ -126,6 +169,10 @@ def persistir(persona, red, url, info, posts=None):
     for post in posts or []:
         texto = (post.get("texto") or "").strip()
         if not texto:
+            texto = (post.get("descripcion_imagen") or post.get("texto_imagen") or "").strip()
+        if not texto and post.get("tiene_imagenes"):
+            texto = "Publicó una imagen."
+        if not texto:
             continue
         limpio, estado = texto_mostrable(texto)
         if estado == "omitir":
@@ -136,15 +183,20 @@ def persistir(persona, red, url, info, posts=None):
             **post,
             "texto": desc.get("texto") or limpio,
             "resumen": desc.get("resumen") or "",
-            "tiene_imagenes": bool(desc.get("tiene_imagenes") or post.get("tiene_imagenes")),
-            "n_imagenes": int(desc.get("n_imagenes") or post.get("n_imagenes") or 0),
+            "tiene_imagenes": bool(desc.get("tiene_imagenes") or post.get("tiene_imagenes")
+                                   or post.get("imagenes")),
+            "n_imagenes": int(desc.get("n_imagenes") or post.get("n_imagenes")
+                              or len(post.get("imagenes") or []) or 0),
+            "imagenes": post.get("imagenes") or [],
         }
         if estado != "ok":
             id_pub, es_nueva = _guardar_publicacion(quien, url, post, red=red)
             nuevas += int(es_nueva)
             omitidas += 1
             continue
-        evaluacion = linkedin_texto.evaluar_publicacion(limpio)
+        para_interes = " ".join(p for p in (
+            limpio, post.get("texto_imagen"), post.get("descripcion_imagen")) if p)
+        evaluacion = linkedin_texto.evaluar_publicacion(para_interes or limpio)
         if evaluacion["omitida"]:
             omitidas += 1
             continue

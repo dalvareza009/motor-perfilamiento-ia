@@ -613,10 +613,14 @@ class FacebookActivityScraper:
                                      if (im.size or {}).get("width", 0) > 60])
                     except Exception:
                         n_img = 0
+                    from app.imagenes_pub import capturar
+                    fotos = capturar(art)
+                    n_img = max(n_img, len(fotos))
                     publicaciones.append({
                         'perfil': profile_url, 'urn': 'N/A', 'url_publicacion': '',
                         'tipo': 'compartida' if compartida else 'publicacion',
                         'autor': autor, 'texto': texto, 'tiempo': tiempo,
+                        'imagenes': fotos,
                         'n_imagenes': n_img, 'tiene_imagenes': n_img > 0,
                         'hashtags': ";".join(self.analisis.extraer_hashtags(texto)),
                         'enlaces': '', 'reacciones': '', 'comentarios': '',
@@ -632,12 +636,14 @@ class FacebookActivityScraper:
             self.driver.execute_script("window.scrollBy(0, 1100);")
             time.sleep(2.5)
         vigentes = self.analisis.filtrar_y_ordenar(publicaciones)
+        from app.discernimiento import filtrar_posts
+        vigentes = filtrar_posts(vigentes)
         from app.perfil_redes import aplicar_lo_publicado
         from app.redes_seguidas import aplicar_a_info
         self.info = aplicar_lo_publicado(self.info, vigentes)
         self.info = aplicar_a_info(self.info, posts=vigentes)
         self.analisis.info_perfil[profile_url] = self.info
-        print(f"  ✔ {len(vigentes)} dentro del último año "
+        print(f"  ✔ {len(vigentes)} útiles del último año "
               f"({self.analisis.ultimas_descartadas} antiguas descartadas)")
         return vigentes[:max_posts]
 
@@ -716,12 +722,38 @@ class FacebookActivityScraper:
             time.sleep(2.2)
         return orden[:max_posts]
 
+    def _preparar_comentarios(self):
+        """Abre el hilo, pasa a «Más recientes» y despliega cada «ver más»."""
+        self.driver.execute_script("""
+            const etiquetas = [...document.querySelectorAll('[aria-label], [role="button"], a, span')];
+            for (const el of etiquetas) {
+              const t = ((el.getAttribute('aria-label') || '') + ' ' + (el.innerText || '')).toLowerCase();
+              if (t.length > 120) continue;
+              if (/\\d+\\s*(comentarios?|comments?)/.test(t) || /^comentarios?$/.test((el.innerText || '').trim().toLowerCase())) {
+                try { el.click(); return; } catch (e) {}
+              }
+            }
+        """)
+        time.sleep(1.4)
+        self.driver.execute_script("""
+            const claves = ['más recientes', 'mas recientes', 'most recent',
+                            'todos los comentarios', 'all comments', 'newest'];
+            for (const el of document.querySelectorAll('[role="button"], span, a, div')) {
+              const t = (el.innerText || '').trim().toLowerCase();
+              if (!t || t.length > 40) continue;
+              if (claves.some(c => t === c || t.includes(c))) { try { el.click(); return t; } catch (e) {} }
+            }
+            return '';
+        """)
+        time.sleep(1.2)
+        self._expandir_comentarios()
+
     def _expandir_comentarios(self):
         """Abre más comentarios y respuestas, no solo los que Facebook muestra primero."""
         vistos = 0
         sin_cambio = 0
-        for _ in range(20):
-            self.driver.execute_script("window.scrollBy(0, 900);")
+        for _ in range(24):
+            self.driver.execute_script("window.scrollBy(0, 700);")
             clic = self.driver.execute_script("""
                 const claves = ['ver más comentarios', 'ver mas comentarios', 'view more comments',
                                 'comentarios anteriores', 'previous comments',
@@ -737,7 +769,7 @@ class FacebookActivityScraper:
                 }
                 return '';
             """)
-            time.sleep(1.1)
+            time.sleep(1.0)
             n = self.driver.execute_script("""
                 return document.querySelectorAll('[aria-label^="Comentario de"], [aria-label^="Comment by"]').length;
             """) or 0
@@ -745,7 +777,7 @@ class FacebookActivityScraper:
                 sin_cambio = 0
             elif n <= vistos:
                 sin_cambio += 1
-                if sin_cambio >= 3:
+                if sin_cambio >= 4:
                     break
             else:
                 sin_cambio = 0
@@ -753,30 +785,60 @@ class FacebookActivityScraper:
 
     def _entradas_visibles(self, pagina_url, solo=""):
         raw = self.driver.execute_script("""
+            const ruido = /^(me gusta|like|me encanta|me importa|me divierte|me enoja|me entristece|me asombra|responder|reply|compartir|share|ocultar|hide|seguir|follow|edited|editado|ver traduccion|see translation|autor|author|hace\\s+\\d|about\\s+\\d|just now|ahora mismo|ayer|yesterday|\\d+\\s*(min|h|d|w|sem|semana|mes|año|hr|hour|day|week|month|year)s?\\.?)$/i;
+            const esNombre = (t, nombre) => {
+              const a = (t || '').replace(/\\s+/g,' ').trim().toLowerCase();
+              const b = (nombre || '').replace(/\\s+/g,' ').trim().toLowerCase();
+              return !!a && !!b && (a === b || (b.startsWith(a) && a.length >= 4));
+            };
             const out = [];
-            const nodos = [...document.querySelectorAll('[aria-label]')];
+            const nodos = [...document.querySelectorAll(
+              '[aria-label^="Comentario de"], [aria-label^="Comment by"]')];
             for (const n of nodos) {
               const lab = n.getAttribute('aria-label') || '';
-              const m = lab.match(/^(?:Comentario de|Comment by)\\s+(.+)$/i);
-              if (!m) continue;
-              const a = n.querySelector('a[href]');
+              const m = lab.match(/^(?:Comentario de|Comment by)\\s+(.+?)(?:\\s+hace\\b|\\s+about\\b|\\s+\\d|$)/i);
+              let bloque = n.closest('li') || n.closest('[role="article"]') || n.parentElement || n;
+              if ((n.innerText || '').trim().length < 60 && n.parentElement) {
+                bloque = n.parentElement.parentElement || n.parentElement;
+              }
+              const a = bloque.querySelector('a[href*="facebook.com/"], a[href*="fb.com/"], a[href*="profile.php"]')
+                        || n.querySelector('a[href]');
+              let nombre = ((a && (a.innerText || a.getAttribute('aria-label') || ''))
+                || (m && m[1]) || '').trim().split('\\n')[0];
+              nombre = nombre.replace(/\\s+hace\\b.*$/i, '').replace(/\\s+\\d+\\s*(min|h|d|sem).*$/i, '').trim();
+              if (!nombre) continue;
               let texto = '';
-              for (const d of n.querySelectorAll('[dir="auto"]')) {
-                const t = (d.innerText || '').trim();
-                if (t && t !== m[1] && t.length > 1 && t.length < 500
-                    && !/^(me gusta|like|responder|reply|hace \\d)/i.test(t)) {
-                  texto = t; break;
+              const msg = bloque.querySelector(
+                '[data-ad-comet-preview="message"], [data-ad-preview="message"]');
+              if (msg) {
+                const t = (msg.innerText || '').replace(/\\s+/g,' ').trim();
+                if (t && !esNombre(t, nombre) && !ruido.test(t)) texto = t;
+              }
+              if (!texto) {
+                for (const d of bloque.querySelectorAll('[dir="auto"]')) {
+                  if (a && a.contains(d)) continue;
+                  if (d.querySelector && d.querySelector('[aria-label^="Comentario de"], [aria-label^="Comment by"]')) continue;
+                  const t = (d.innerText || '').replace(/\\s+/g,' ').trim();
+                  if (!t || t.length > 4000 || esNombre(t, nombre) || ruido.test(t)) continue;
+                  if (t.length > texto.length) texto = t;
                 }
               }
-              out.push({href: a ? a.href : '', nombre: m[1], tipo: 'comentario', texto});
-            }
-            const dialogo = document.querySelector('[role="dialog"]');
-            if (dialogo) {
-              for (const a of dialogo.querySelectorAll('a[href]')) {
-                const nombre = (a.innerText || a.getAttribute('aria-label') || '')
-                  .trim().split('\\n')[0];
-                if (nombre && a.href) out.push({href: a.href, nombre, tipo: 'like', texto: ''});
+              if (!texto) {
+                const lineas = (bloque.innerText || '').split('\\n').map(s => s.trim()).filter(Boolean);
+                for (const t of lineas) {
+                  if (t.length > 1 && t.length < 4000 && !esNombre(t, nombre) && !ruido.test(t)
+                      && !/^(me gusta|responder|like|reply)$/i.test(t)) {
+                    texto = t; break;
+                  }
+                }
               }
+              let reaccion = '';
+              for (const el of bloque.querySelectorAll('[aria-label]')) {
+                const al = (el.getAttribute('aria-label') || '').trim();
+                if (/^(Me gusta|Me encanta|Me importa|Me divierte|Me enoja|Me entristece|Me asombra|Like|Love|Care|Haha|Wow|Sad|Angry)\\b/i.test(al)
+                    && al.length < 40) { reaccion = al.split(/[.,]/)[0].trim(); break; }
+              }
+              out.push({href: a ? a.href : '', nombre, tipo: 'comentario', texto, reaccion});
             }
             return out;
         """) or []
@@ -790,6 +852,7 @@ class FacebookActivityScraper:
                 "nombre": item.get("nombre"),
                 "tipo": tipo,
                 "texto": item.get("texto") or "",
+                "reaccion": item.get("reaccion") or "",
                 "pagina": pagina_url,
             })
         return entradas
@@ -828,7 +891,7 @@ class FacebookActivityScraper:
         return self.driver.execute_script("""
             const primero = new RegExp(arguments[0], 'i');
             const segundo = new RegExp(arguments[1], 'i');
-            const labs = [...document.querySelectorAll('[aria-label], [role="button"]')];
+            const labs = [...document.querySelectorAll('[aria-label], [role="button"], span, div')];
             for (const el of labs) {
               const t = (el.getAttribute('aria-label') || el.innerText || '');
               if (primero.test(t) && t.length < 90) { el.click(); return t; }
@@ -836,6 +899,13 @@ class FacebookActivityScraper:
             for (const el of labs) {
               const t = (el.getAttribute('aria-label') || '');
               if (t.length < 90 && /\\d/.test(t) && segundo.test(t)) { el.click(); return t; }
+            }
+            for (const el of labs) {
+              const t = (el.getAttribute('aria-label') || '');
+              if (t.length < 130 && /\\d/.test(t)
+                  && /me gusta|me encanta|me importa|me divierte|me enoja|me entristece|like|love|care|haha|wow|angry|sad/i.test(t)) {
+                el.click(); return t;
+              }
             }
             return '';
         """, primero, segundo)
@@ -981,7 +1051,7 @@ class FacebookActivityScraper:
                 print(f"  ⚠ No se abrió la publicación: {e}")
                 continue
             leidas += 1
-            self._expandir_comentarios()
+            self._preparar_comentarios()
             n_com = mezclar(self._entradas_visibles(page_url, solo="comentario"), post.get("texto") or "")
             n_reac = mezclar(self._reacciones_del_post(page_url), post.get("texto") or "")
             n_share = mezclar(self._dialogo_de_post(page_url, "compartido"), post.get("texto") or "")
@@ -1014,13 +1084,20 @@ class FacebookActivityScraper:
             p["contacto"] = info.get("contacto") or formatear_contacto(info, p["perfil"])
             if tarea:
                 tarea.avance(len(posts) + i + 1, len(posts) + max_personas)
+        from app.facebook_pagina import es_relevante_colombia
+        antes = len(personas)
+        personas = [p for p in personas if es_relevante_colombia(p)]
+        a_fichar = [p for p in a_fichar if es_relevante_colombia(p)]
+        omitidas_ext = antes - len(personas)
+        if omitidas_ext:
+            print(f"  Se omitieron {omitidas_ext} persona(s) que no viven ni son de Colombia.")
         for p in personas:
             if not p.get("contacto"):
                 p["contacto"] = formatear_contacto({}, p.get("perfil") or "")
             p["acercamiento"] = acercamiento(p, nombre_pagina)
 
         n = persistir(page_url, nombre_pagina, personas)
-        print(f"  Conservadas {n} URL(s) de {nombre_pagina} (fichas nuevas: {len(a_fichar)}).")
+        print(f"  Conservadas {n} URL(s) de {nombre_pagina} en Colombia (fichas nuevas: {len(a_fichar)}).")
         return {
             "ok": True,
             "pagina": page_url,
@@ -1030,6 +1107,7 @@ class FacebookActivityScraper:
             "guardados": n,
             "nuevas": len(a_fichar),
             "omitidas_ya_en_base": len(repetidas),
+            "omitidas_fuera_colombia": omitidas_ext,
             "urls_conservadas": n,
         }
 

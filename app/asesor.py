@@ -4,6 +4,8 @@ Ejecutar desde la raíz del proyecto:  python -m app.asesor
 Comandos directos (sin LLM, para que un cambio de estado nunca dependa de una interpretación):
   /borradores [estado]   /ver ID   /aprobar ID   /descartar ID   /enviado ID
 """
+import re
+
 from app import governance, mensajes, segmentos
 from app.conocimiento import get_product_knowledge
 from app.ollama_client import generate_json, generate_response
@@ -11,6 +13,15 @@ from app.ollama_client import generate_json, generate_response
 ACCIONES = {"contar", "listar", "resumen", "mensaje_segmento", "mensaje_cliente", "mensajes_lote"}
 CANALES = {"correo", "whatsapp"}
 LIMITE_LOTE = 50
+_FILTRO_VACIO = {"", "null", "none", "n/a", "na", "sin dato", "undefined", "nulo"}
+_FRASE_PERFIL = re.compile(
+    r"fuera de la lista|por fuera|sin vincular|no vinculad|"
+    r"no est[aá]n vinculad|no estan vinculad|"
+    r"no (son|est[aá]n|estan) clientes|"
+    r"no (est[aá]n|estan) en (la )?lista|"
+    r"scrap|perfil(?:es)? le[ií]d",
+    re.I,
+)
 
 
 # ------------------------------------------------------------------ interpretación
@@ -26,9 +37,13 @@ Acciones:
 - mensaje_cliente: borrador de mensaje para UNA persona (pon su nombre en "nombre").
 - mensajes_lote: un borrador por cada persona de un grupo.
 Dimensiones y filtros permitidos: {dims}.
-Formato: {{"accion": "...", "agrupar_por": "<dimension o null>", "filtros": {{"<dimension>": "<valor>"}}, "canal": "<correo|whatsapp|null>", "nombre": "<nombre de la persona o null>", "no_soportado": []}}
+Formato: {{"accion": "...", "agrupar_por": "<dimension o null>", "filtros": {{"<dimension>": "<valor>"}}, "canal": "<correo|whatsapp|null>", "nombre": "<nombre de la persona o null>", "origen": "<clientes|perfiles>", "no_soportado": []}}
 agrupar_por sirve con contar y con listar. Si no hay filtros, usa {{}}.
 "canal" solo si el asesor lo menciona (correo/email o whatsapp); si no, null.
+"origen" es "perfiles" cuando pregunta por personas a las que se les hizo scraping y NO están en la
+lista de clientes (no vinculadas, por fuera de la lista, sin vincular). En ese caso NO escribas esa
+frase en "no_soportado": el motor sí tiene esos perfiles. Si habla de la cartera de clientes, "origen" es "clientes".
+No inventes filtros. Si no menciona ciudad, profesión o producto, no los pongas y no uses null como valor.
 IMPORTANTE: las dimensiones disponibles son solo las listadas. Si la solicitud pide un dato que NO está
 (hijos, salario, estado civil...), NO lo asignes a otra dimensión: escríbelo en "no_soportado".
 tiene_universidad significa solo "tiene una universidad registrada".
@@ -37,9 +52,11 @@ Cuando el valor de un filtro es sí/no, usa "si" o "no".
 Pon cada dato en su dimensión: una universidad (ej. EAFIT) va en "universidad"; una ocupación en
 "profesion"; una ciudad en "ciudad"; un producto en "producto_interes".
 Ejemplos:
-"clientes de EAFIT en Medellín" -> {{"accion":"listar","agrupar_por":null,"filtros":{{"universidad":"EAFIT","ciudad":"Medellín"}},"canal":null,"nombre":null,"no_soportado":[]}}
-"hazme un mensaje de whatsapp para Ana Gómez" -> {{"accion":"mensaje_cliente","agrupar_por":null,"filtros":{{}},"canal":"whatsapp","nombre":"Ana Gómez","no_soportado":[]}}
-"mensajes por correo para los de seguro educativo" -> {{"accion":"mensajes_lote","agrupar_por":null,"filtros":{{"producto_interes":"seguro educativo"}},"canal":"correo","nombre":null,"no_soportado":[]}}
+"clientes de EAFIT en Medellín" -> {{"accion":"listar","agrupar_por":null,"filtros":{{"universidad":"EAFIT","ciudad":"Medellín"}},"canal":null,"nombre":null,"origen":"clientes","no_soportado":[]}}
+"los que están por fuera de la lista de clientes" -> {{"accion":"listar","agrupar_por":null,"filtros":{{}},"canal":null,"nombre":null,"origen":"perfiles","no_soportado":[]}}
+"qué sabemos de Mariana Gutiérrez, no está vinculada" -> {{"accion":"listar","agrupar_por":null,"filtros":{{}},"canal":null,"nombre":"Mariana Gutiérrez","origen":"perfiles","no_soportado":[]}}
+"hazme un mensaje de whatsapp para Ana Gómez" -> {{"accion":"mensaje_cliente","agrupar_por":null,"filtros":{{}},"canal":"whatsapp","nombre":"Ana Gómez","origen":"clientes","no_soportado":[]}}
+"mensajes por correo para los de seguro educativo" -> {{"accion":"mensajes_lote","agrupar_por":null,"filtros":{{"producto_interes":"seguro educativo"}},"canal":"correo","nombre":null,"origen":"clientes","no_soportado":[]}}
 
 Solicitud: {pregunta}"""
     return generate_json(prompt)
@@ -52,6 +69,10 @@ def sanear(intencion):
     filtros = {}
     descartados = [str(x) for x in (intencion.get("no_soportado") or [])]
     for k, v in (intencion.get("filtros") or {}).items():
+        if isinstance(v, str) and v.strip().lower() in _FILTRO_VACIO:
+            continue
+        if v is None or v == "":
+            continue
         if k in segmentos.DIMENSIONES and isinstance(v, (str, int, bool)):
             filtros[k] = v
         else:
@@ -61,10 +82,34 @@ def sanear(intencion):
         agrupar = None
     canal = str(intencion.get("canal") or "").lower().replace("email", "correo")
     nombre = intencion.get("nombre")
+    if isinstance(nombre, str) and nombre.strip().lower() in _FILTRO_VACIO:
+        nombre = None
+    origen = str(intencion.get("origen") or "").lower()
     return {"accion": intencion["accion"], "agrupar_por": agrupar, "filtros": filtros,
             "canal": canal if canal in CANALES else None,
             "nombre": nombre.strip() if isinstance(nombre, str) and nombre.strip() else None,
-            "no_soportado": list(dict.fromkeys(descartados))}
+            "origen": origen if origen in {"clientes", "perfiles"} else "clientes",
+            "no_soportado": list(dict.fromkeys(x for x in descartados if x.lower() not in _FILTRO_VACIO))}
+
+
+def reconocer_perfiles(pregunta, intencion):
+    """«Por fuera de la lista» es una consulta de perfiles con scraping, no un dato inexistente."""
+    if not intencion:
+        return intencion
+    if intencion.get("origen") == "perfiles" or _FRASE_PERFIL.search(pregunta or ""):
+        intencion["origen"] = "perfiles"
+        intencion["no_soportado"] = [
+            x for x in intencion.get("no_soportado") or []
+            if not _FRASE_PERFIL.search(str(x))
+        ]
+        if intencion.get("agrupar_por") not in perfiles_dimensiones():
+            intencion["agrupar_por"] = None
+    return intencion
+
+
+def perfiles_dimensiones():
+    from app.perfiles_consulta import DIMENSIONES
+    return DIMENSIONES | {"nombre"}
 
 
 # ------------------------------------------------------------------ plantilla por segmento (sin personalizar)
@@ -113,6 +158,16 @@ REGLAS:
 
 # ------------------------------------------------------------------ acciones
 def _contar(intencion, usuario, rol):
+    if intencion.get("origen") == "perfiles":
+        from app.perfiles_consulta import DIMENSIONES, consultar, contar
+        fichas, _ = consultar(intencion["filtros"], intencion.get("nombre"), 500)
+        dim = intencion["agrupar_por"] if intencion.get("agrupar_por") in DIMENSIONES else None
+        todas = contar(fichas, dim or "red") if dim else [("sin vincular", len(fichas))]
+        visibles = governance.aplicar_k_anonimato(todas, rol)
+        governance.registrar(usuario, rol, "contar", intencion, len(visibles))
+        salida = [f"Perfiles con scraping y sin vincular (total {len(fichas)}):"]
+        salida += [f"  {v}: {n}" for v, n in visibles]
+        return "\n".join(salida)
     dim = intencion["agrupar_por"] or "segmento"
     todas = segmentos.contar_por(dim, intencion["filtros"])
     visibles = governance.aplicar_k_anonimato(todas, rol)
@@ -128,6 +183,21 @@ def _contar(intencion, usuario, rol):
 
 
 def _listar(intencion, usuario, rol):
+    if intencion.get("origen") == "perfiles":
+        from app.perfiles_consulta import consultar, texto
+        fichas, total = consultar(intencion["filtros"], intencion.get("nombre"), governance.LIMITE_LISTADO)
+        governance.registrar(usuario, rol, "listar", intencion, len(fichas))
+        if not fichas:
+            return "No hay perfiles con scraping fuera de la lista de clientes para ese criterio."
+        if len(fichas) == 1:
+            return texto(fichas[0])
+        lineas = [f"{total} perfil(es) con scraping, sin vincular:"]
+        for f in fichas:
+            lineas.append(
+                f"  {f['nombre']} | {f.get('ciudad') or 'sin ciudad'} | "
+                f"{f.get('profesion') or 'sin profesión'} | "
+                f"{f.get('producto_interes') or 'sin producto'} | {f.get('redes') or ''}")
+        return "\n".join(lineas)
     filtros = intencion["filtros"]
     rows = segmentos.listar(filtros, governance.LIMITE_LISTADO)
     governance.registrar(usuario, rol, "listar", intencion, len(rows))
@@ -159,7 +229,11 @@ def _mensaje_cliente(intencion, usuario, rol):
         return "¿Por qué canal: correo o WhatsApp?"
     coincidencias = mensajes.buscar_cliente(intencion["nombre"])
     if not coincidencias:
-        return f"No encontré clientes que coincidan con '{intencion['nombre']}'."
+        from app.perfiles_consulta import consultar, texto
+        fichas, _ = consultar({}, intencion["nombre"], 3)
+        if fichas:
+            return texto(fichas[0])
+        return f"No encontré clientes ni perfiles con scraping que coincidan con '{intencion['nombre']}'."
     if len(coincidencias) > 1:
         lista = "\n".join(f"  {c[0]} | {c[1]} | {c[2]}" for c in coincidencias)
         return f"Hay varios clientes que coinciden. Repite la solicitud usando la clave:\n{lista}"
@@ -221,7 +295,7 @@ def _mensajes_lote(intencion, usuario, rol):
 
 def ejecutar(pregunta, usuario, rol):
     crudo = interpretar(pregunta)
-    intencion = sanear(crudo)
+    intencion = reconocer_perfiles(pregunta, sanear(crudo))
     print(f"[debug] LLM devolvió: {crudo}")
     print(f"[debug] Aplicado tras validar: {intencion}")
     if intencion is None:

@@ -1,4 +1,4 @@
-"""Ingesta de perfiles públicos autorizados (LinkedIn, Instagram, Facebook, X, TikTok).
+"""Ingesta de perfiles públicos autorizados (LinkedIn, Instagram, Facebook, X, TikTok, Substack).
 
 LinkedIn e Instagram no se abren como página: Firecrawl los bloquea. Esos dos se consultan
 como ficha (cargo, empresa, estudios, ciudad, bio) y el resto sigue por la página pública.
@@ -21,7 +21,16 @@ from app import governance, perfil_redes
 from app.database import get_connection
 
 ARCHIVO = Path(__file__).resolve().parents[1] / "data" / "perfiles_autorizados.json"
-CATEGORIAS_DE_VIDA = ("Trabajo", "Estudios", "Ubicacion", "Familia", "Situacion actual", "Edad", "Interes")
+CATEGORIAS_DE_VIDA = (
+    "Trabajo", "Estudios", "Ubicacion", "Familia", "Hijos",
+    "Situacion actual", "Edad", "Interes",
+)
+# Ficha de perfil propio. Nunca seguidores, seguidos, comentadores ni páginas.
+CATEGORIAS_FICHA_COMPLETA = (
+    "Trabajo", "Experiencia", "Estudios", "Cursos", "Ubicacion", "Descripcion",
+    "Informacion", "Situacion actual", "Edad", "Estado civil", "Estado laboral",
+    "Estado academico", "Ingresos", "Logros", "Contacto", "Celular", "Correo",
+)
 AUTORIZACION_LOTE = "Perfil leído en el motor: se asume autorización previa."
 _ARCHIVO_LOCK = threading.Lock()
 
@@ -58,6 +67,60 @@ def asegurar_tabla():
                 if sentencia.strip():
                     cur.execute(sentencia)
         conn.commit()
+    finally:
+        conn.close()
+    _corregir_nombres_placeholder()
+    try:
+        limpiar_hechos_guardados()
+    except Exception as e:
+        print(f"No se pudo limpiar la ficha guardada: {e}")
+    try:
+        aprobar_ficha_necesaria()
+    except Exception as e:
+        print(f"No se pudieron aprobar solos los hechos de ficha: {e}")
+    try:
+        from app import facebook_pagina
+        facebook_pagina.pasar_otras_redes_hechos_a_urls()
+    except Exception:
+        pass
+
+
+def _corregir_nombres_placeholder():
+    """Si el scrape guardó N/A o Publicación, deja el nombre de la URL."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT DISTINCT fuente_url, nombre FROM public.hechos_perfil
+                           WHERE LOWER(nombre) IN ('n/a','na','publicación','publicacion',
+                                                   'linkedin','perfil','sin nombre')
+                              OR nombre LIKE 'http%'
+                           LIMIT 400""")
+            filas = cur.fetchall()
+            for url, actual in filas:
+                nuevo = perfil_redes.nombre_de_perfil(actual, url)
+                if nuevo and nuevo != actual:
+                    cur.execute("""UPDATE public.hechos_perfil SET nombre = %s
+                                   WHERE fuente_url = %s AND nombre = %s""",
+                                (nuevo, url, actual))
+            try:
+                cur.execute("""SELECT DISTINCT fuente_url, nombre FROM public.publicaciones_linkedin
+                               WHERE LOWER(nombre) IN ('n/a','na','publicación','publicacion')
+                                  OR nombre LIKE 'http%'
+                               LIMIT 400""")
+                for url, actual in cur.fetchall():
+                    nuevo = perfil_redes.nombre_de_perfil(actual, url)
+                    if nuevo and nuevo != actual:
+                        cur.execute("""UPDATE public.publicaciones_linkedin SET nombre = %s
+                                       WHERE fuente_url = %s AND nombre = %s""",
+                                    (nuevo, url, actual))
+            except Exception:
+                pass
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
     finally:
         conn.close()
 
@@ -159,40 +222,144 @@ def _leer_perfil(fc, red, url):
         return "", [], [], _aviso_firecrawl(str(e))
 
 
+def _listo_para_ficha(fragmento):
+    """Trabajo, estudios, estado civil, origen, vivienda o edad se guardan ya aprobados."""
+    from app.discernimiento import ficha_necesaria
+    destino = ficha_necesaria(fragmento.get("categoria") or "", fragmento.get("contenido") or "")
+    if destino:
+        return True, destino
+    return False, fragmento.get("categoria") or ""
+
+
+def _fragmentos_ficha(fragmentos):
+    """La ficha se guarda sin el pie de la red ni perfiles recomendados pegados."""
+    from app.contenido import excluidas_de_ficha
+    fuera = set(excluidas_de_ficha()) | {"Gusto", "Producto sugerido"}
+    limpios = []
+    for f in fragmentos or []:
+        if (f.get("categoria") or "") in fuera:
+            limpios.append(f)
+            continue
+        cuerpo = perfil_redes.limpiar_contenido_ficha(f.get("contenido") or "")
+        if not cuerpo:
+            continue
+        limpios.append({**f, "contenido": cuerpo})
+    return limpios
+
+
+def limpiar_hechos_guardados():
+    """Limpia los perfiles ya leídos. Lo que era solo pie de página se descarta."""
+    from app.contenido import excluidas_de_ficha
+    fuera = set(excluidas_de_ficha()) | {"Gusto", "Producto sugerido"}
+    conn = get_connection()
+    n = vacios = 0
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT id_hecho, categoria, contenido
+                           FROM public.hechos_perfil WHERE NOT descartado""")
+            for id_hecho, categoria, contenido in cur.fetchall():
+                if (categoria or "") in fuera:
+                    continue
+                cuerpo = perfil_redes.limpiar_contenido_ficha(contenido or "")
+                if not cuerpo:
+                    cur.execute("""UPDATE public.hechos_perfil
+                                   SET activo = FALSE, descartado = TRUE, fecha_actualizacion = now()
+                                   WHERE id_hecho = %s""", (id_hecho,))
+                    vacios += cur.rowcount
+                elif cuerpo != (contenido or ""):
+                    h = hashlib.sha256(cuerpo.encode("utf-8")).hexdigest()
+                    cur.execute("""UPDATE public.hechos_perfil
+                                   SET contenido = %s, hash_contenido = %s, fecha_actualizacion = now()
+                                   WHERE id_hecho = %s""", (cuerpo, h, id_hecho))
+                    n += cur.rowcount
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    if n or vacios:
+        print(f"Ficha limpia: {n} hecho(s) sin ruido de la página, {vacios} que eran solo eso y se descartaron.")
+    return n, vacios
+
+
 def _guardar(persona, red, url, fragmentos):
     nuevos = actualizados = sin_cambios = 0
+    fragmentos = _fragmentos_ficha(fragmentos)
+    nombre = perfil_redes.nombre_de_perfil((persona or {}).get("nombre"), url)
+    clave = (persona or {}).get("clave_cliente")
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             for f in fragmentos:
                 cuerpo = f["contenido"]
+                activo, categoria = _listo_para_ficha(f)
                 h = hashlib.sha256(cuerpo.encode("utf-8")).hexdigest()
-                cur.execute("""SELECT id_hecho, hash_contenido FROM public.hechos_perfil
+                cur.execute("""SELECT id_hecho, hash_contenido, activo FROM public.hechos_perfil
                                WHERE fuente_url = %s AND titulo = %s""", (url, f["titulo"]))
                 fila = cur.fetchone()
                 if fila and fila[1] == h:
+                    if nombre:
+                        cur.execute("""UPDATE public.hechos_perfil SET nombre = %s
+                                       WHERE id_hecho = %s""", (nombre, fila[0]))
+                    if activo and not fila[2]:
+                        cur.execute("""UPDATE public.hechos_perfil
+                                       SET activo = TRUE, categoria = %s, fecha_actualizacion = now()
+                                       WHERE id_hecho = %s AND NOT activo AND NOT descartado""",
+                                    (categoria, fila[0]))
                     sin_cambios += 1
                 elif fila:
                     cur.execute("""UPDATE public.hechos_perfil
                                    SET contenido = %s, hash_contenido = %s, categoria = %s,
                                        clave_cliente = COALESCE(%s, clave_cliente), nombre = %s, red = %s,
-                                       activo = FALSE, descartado = FALSE, fecha_actualizacion = now()
+                                       activo = %s, descartado = FALSE, fecha_actualizacion = now()
                                    WHERE id_hecho = %s""",
-                                (cuerpo, h, f["categoria"], persona["clave_cliente"],
-                                 persona["nombre"], red, fila[0]))
+                                (cuerpo, h, categoria, clave, nombre, red, activo, fila[0]))
                     actualizados += 1
                 else:
                     cur.execute("""INSERT INTO public.hechos_perfil
                                    (clave_cliente, nombre, red, fuente_url, categoria, titulo,
                                     contenido, hash_contenido, activo, fecha_actualizacion)
-                                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,FALSE,now())""",
-                                (persona["clave_cliente"], persona["nombre"], red, url,
-                                 f["categoria"], f["titulo"], cuerpo, h))
+                                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,now())""",
+                                (clave, nombre, red, url, categoria, f["titulo"], cuerpo, h, activo))
                     nuevos += 1
         conn.commit()
     finally:
         conn.close()
     return nuevos, actualizados, sin_cambios
+
+
+def aprobar_ficha_necesaria():
+    """Aprueba, en los perfiles ya leídos, lo que es ficha y no hace falta revisar a mano."""
+    from app.discernimiento import ficha_necesaria
+    conn = get_connection()
+    n = 0
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT id_hecho, categoria, contenido
+                           FROM public.hechos_perfil
+                           WHERE activo = FALSE AND descartado = FALSE""")
+            pendientes = cur.fetchall()
+            for id_hecho, categoria, contenido in pendientes:
+                destino = ficha_necesaria(categoria or "", contenido or "")
+                if not destino:
+                    continue
+                cur.execute("""UPDATE public.hechos_perfil
+                               SET activo = TRUE, categoria = %s, fecha_actualizacion = now()
+                               WHERE id_hecho = %s AND activo = FALSE AND descartado = FALSE""",
+                            (destino, id_hecho))
+                n += cur.rowcount
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    if n:
+        governance.registrar("sistema", "admin", "aprobar_ficha_automatica",
+                             {"criterio": "trabajo, estudios, estado civil, origen, vivienda, edad"}, n)
+        print(f"{n} hecho(s) de ficha aprobados solos (trabajo, estudios, estado civil, lugar o edad).")
+    return n
 
 
 def _depurar_sobrantes(url, fragmentos):
@@ -231,7 +398,7 @@ def registrar_perfil_leido(nombre, red, url, clave_cliente=None):
     if not clasificada:
         return None
     red, limpia = clasificada
-    nombre = str(nombre or "").strip()
+    nombre = perfil_redes.nombre_de_perfil(nombre, limpia)
     clave = str(clave_cliente or "").strip()
 
     def misma_url(u):
@@ -331,7 +498,7 @@ def objetivos_de_pedido(nombres=None, urls=None, todos=False, data=None):
     if todos:
         personas, avisos = perfil_redes.cargar_autorizados(data)
         return [(p, u) for p in personas for u in p["urls"]], avisos
-    return [], ["Pega URLs de LinkedIn, Facebook, Instagram o X, una por línea."]
+    return [], ["Pega URLs de LinkedIn, Facebook, Instagram, X o Substack, una por línea."]
 
 
 def _leer(path):

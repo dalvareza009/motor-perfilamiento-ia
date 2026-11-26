@@ -22,11 +22,16 @@ SENSIBLES = (
 
 # tema, patrón ya sin tildes, producto del catálogo, razón que ve el revisor
 REGLAS = (
-    ("estudios", re.compile(r"\b(universidad|maestr|colegio|pregrado|posgrado|estudiante|estudie|estudio)\b"),
-     "Seguro educativo", "La publicación pública menciona estudios."),
-    ("hijos", re.compile(r"\b(mi hijo|mi hija|mis hijos|mis hijas)\b"),
+    ("estudios", re.compile(
+        r"\b(universidad|maestr\w*|colegio|pregrado|posgrado|estudiante|estudie|me gradue|egresad)\b"),
+     "Seguro educativo", "La publicación pública menciona estudios formales."),
+    ("hijos", re.compile(
+        r"\b(mi hijo|mi hija|mis hijos|mis hijas|mama de|papa de|"
+        r"soy (?:mama|papa|madre|padre)|mi bebe)\b"),
      "Seguro educativo", "La publicación pública menciona hijos."),
-    ("hijos", re.compile(r"\b(mi hijo|mi hija|mis hijos|mis hijas)\b"),
+    ("hijos", re.compile(
+        r"\b(mi hijo|mi hija|mis hijos|mis hijas|mama de|papa de|"
+        r"soy (?:mama|papa|madre|padre)|mi bebe)\b"),
      "Seguro de vida", "La publicación pública menciona hijos."),
     ("familia", re.compile(r"\b(esposo|esposa|mi pareja|mi familia|casado|casada|estado civil)\b"),
      "Seguro de vida", "La publicación pública menciona familia o estado civil."),
@@ -204,6 +209,9 @@ def persona_de_url(url, personas):
 
     Una URL de actividad (/recent-activity/) no es el perfil público y no se lee.
     """
+    cruda = (url or "").lower()
+    if "/recent-activity/" in cruda or "/overlay/" in cruda:
+        return None
     clasificada = clasificar_url(url)
     if not clasificada or clasificada[0] != "linkedin":
         return None

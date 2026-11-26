@@ -1,21 +1,32 @@
-# Instalar el motor de perfilamiento en otro computador
+# Motor de perfilamiento IA — instalación en otro computador
 
-Copia este paquete a un PC Windows y deja el motor igual que en el de origen: panel, segmentos, clientes, asistente, borradores, conocimiento, perfiles públicos, scraping con Chrome (Facebook, Instagram, LinkedIn y X), revisión de hechos, contenido, seguidores e intereses.
+Guía para dejar el motor igual que en el PC de origen: panel, segmentos, clientes, asistente, borradores, conocimiento, perfiles públicos y scraping con Chrome (Facebook, Instagram, LinkedIn y X).
 
-No incluye `.env`, cookies ni sesiones de Chrome. Esas hay que crearlas en el equipo nuevo.
+El zip **no trae** `.env`, cookies ni sesiones de Chrome. Esas se crean aquí.
+
+Paquete: `motor_perfilamiento_ia_equipo.zip`
 
 ---
 
-## Qué hay que tener instalado
+## 1. Programas
 
-1. **Python 3.12 o superior** — https://www.python.org/downloads/  
-   Marca *Add python.exe to PATH*.
-2. **Google Chrome** (no Edge) — https://www.google.com/chrome/
-3. **Git** (opcional) — https://git-scm.com/download/win
-4. **Ollama** (opcional, solo si el modelo va a correr en este PC) — https://ollama.com/download
-5. **PostgreSQL 15–18** (solo si NO vas a usar Neon y quieres la base entera en este PC) — https://www.postgresql.org/download/windows/
+Instalar en este PC, en este orden:
 
-Comprobar en PowerShell:
+| Programa | Enlace | Nota |
+| --- | --- | --- |
+| Python 3.12 o superior | https://www.python.org/downloads/ | Marcar **Add python.exe to PATH** |
+| Google Chrome | https://www.google.com/chrome/ | No usar Edge |
+| PostgreSQL 15–18 | https://www.postgresql.org/download/windows/ | Hace falta si la base va a vivir en este PC |
+| Ollama (opcional) | https://ollama.com/download | Solo para asistente, recomendaciones y borradores en local |
+
+Si instalan Ollama, en PowerShell:
+
+```powershell
+ollama pull qwen3:4b-instruct
+ollama pull nomic-embed-text
+```
+
+Comprobar Python:
 
 ```powershell
 python --version
@@ -23,55 +34,35 @@ python --version
 
 ---
 
-## Paso 1 — Descomprimir
+## 2. Descomprimir
 
-Descomprime `motor_perfilamiento_ia_equipo.zip` en una carpeta estable, por ejemplo:
+Descomprimir el zip en una carpeta estable, por ejemplo:
 
 `C:\Users\TU_USUARIO\Documents\motor_perfilamiento_ia`
 
-No lo dejes dentro de Descargas. Entra a esa carpeta en el Explorador.
+No dejarlo en Descargas. Abrir esa carpeta en el Explorador.
 
 ---
 
-## Paso 2 — Archivo `.env`
+## 3. Archivo `.env`
 
-En la raíz del proyecto:
+En la raíz del proyecto, en PowerShell:
 
 ```powershell
 copy .env.example .env
 ```
 
-Abre `.env` y elige **una** de las dos formas.
-
-### Forma A — Igual que el PC de origen (recomendado)
-
-El scraping corre aquí con Chrome; la base y el modelo son los de Neon / Vercel.
-
-Pega los mismos valores que en el otro computador (Vercel → Settings → Environment Variables, o el `.env` de origen):
+Abrir `.env` y dejarlo así (es el modo de este equipo: Postgres local + Firecrawl + Ollama):
 
 ```env
-DATABASE_URL=
-DEMO_CLAVE=jefe-prueba-2026
-SESION_SECRETA=jefe-prueba-2026
-LLM_BASE_URL=https://ai-gateway.vercel.sh/v1
-LLM_MODEL=openai/gpt-4o-mini
-LLM_API_KEY=
-```
-
-- `DATABASE_URL`: en Neon usa **DATABASE_URL_UNPOOLED**.
-- No pongas `SCRAPE_HEADLESS=1`: Chrome tiene que verse para iniciar sesión.
-
-### Forma B — Todo en este PC (sin Neon)
-
-Comenta `DATABASE_URL` y deja:
-
-```env
-# DATABASE_URL=
 DB_HOST=localhost
 DB_PORT=5432
 DB_NAME=base_datos
 DB_USER=postgres
-DB_PASSWORD=la_clave_de_tu_postgres
+DB_PASSWORD=
+K_MIN=0
+SITIO_DOMINIO=globalseguroscolombia.com
+FIRECRAWL_API_KEY=
 DEMO_CLAVE=jefe-prueba-2026
 SESION_SECRETA=jefe-prueba-2026
 OLLAMA_URL=http://localhost:11434/api/chat
@@ -80,11 +71,38 @@ OLLAMA_EMBED_URL=http://localhost:11434/api/embed
 EMBED_MODEL=nomic-embed-text
 ```
 
-PostgreSQL tiene que estar instalado y el servicio en ejecución.
+Completar a mano:
+
+- `DB_PASSWORD`: la clave que pusieron al instalar PostgreSQL. Si les pasaron la del equipo de origen, usen esa **solo si** en este PC Postgres tiene la misma clave.
+- `FIRECRAWL_API_KEY`: la key de Firecrawl que les pasaron aparte (hace falta para ingestar el sitio de producto).
+
+Entrada a la web:
+
+- Clave: `jefe-prueba-2026`
+- Rol: **Administrador**
+
+No poner `SCRAPE_HEADLESS=1`: Chrome tiene que verse para iniciar sesión en las redes.
+
+### Opcional: misma base y modelo de Vercel / Neon
+
+Si van a compartir la base de la nube (no la local), comentar las líneas `DB_*` y `OLLAMA_*` y usar:
+
+```env
+DATABASE_URL=
+DEMO_CLAVE=jefe-prueba-2026
+SESION_SECRETA=jefe-prueba-2026
+LLM_BASE_URL=https://ai-gateway.vercel.sh/v1
+LLM_MODEL=openai/gpt-4o-mini
+LLM_API_KEY=
+FIRECRAWL_API_KEY=
+SITIO_DOMINIO=globalseguroscolombia.com
+```
+
+`DATABASE_URL` y `LLM_API_KEY` salen de Vercel → Settings → Environment Variables. En Neon usar **DATABASE_URL_UNPOOLED**.
 
 ---
 
-## Paso 3 — Preparar el equipo
+## 4. Preparar el equipo
 
 Doble clic en `INSTALAR.bat`, o en PowerShell dentro de la carpeta:
 
@@ -92,48 +110,48 @@ Doble clic en `INSTALAR.bat`, o en PowerShell dentro de la carpeta:
 powershell -ExecutionPolicy Bypass -File .\scripts\preparar-equipo.ps1
 ```
 
-Eso crea `.venv`, instala `requirements.txt` y, si usas la forma B, carga `datos_iniciales/base_datos.sql`.
+Eso crea `.venv`, instala las librerías y, si no hay `DATABASE_URL`, carga `datos_iniciales/base_datos.sql` en Postgres.
 
 ---
 
-## Paso 4 — Arrancar
+## 5. Arrancar
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\iniciar.ps1
 ```
 
-Deja esa ventana abierta. En **Google Chrome** entra a http://127.0.0.1:8000
+Dejar esa ventana abierta. En **Google Chrome** entrar a http://127.0.0.1:8000
 
 | Campo | Valor |
 | --- | --- |
-| Usuario | el que quieras (queda en auditoría) |
-| Clave | `jefe-prueba-2026` (o la de `DEMO_CLAVE`) |
+| Usuario | el que quieran (queda en auditoría) |
+| Clave | `jefe-prueba-2026` |
 | Rol | **Administrador** |
 
 ---
 
-## Paso 5 — Scraping (primera vez en este PC)
+## 6. Scraping (primera vez en este PC)
 
-Las sesiones de Facebook, Instagram, LinkedIn y X **no viajan** en el zip. En este computador hay que entrar otra vez:
+Las sesiones de Facebook, Instagram, LinkedIn y X **no van en el zip**. Hay que entrar otra vez en este computador:
 
 1. Menú → **Perfiles públicos**.
-2. Pega una URL o usa Extraer lote / Página Facebook.
-3. Chrome se abre: inicia sesión en esa red (2FA si aplica).
-4. Cuando veas el feed, confirma en la web del motor.
+2. Pegar una URL, Extraer lote o Página Facebook.
+3. Chrome se abre: iniciar sesión en esa red (2FA si aplica).
+4. Cuando cargue el feed, confirmar en la web del motor.
 
-A partir de ahí las cookies quedan en este PC (`*_cookies.json` y `chrome_*_profile/`). No las copies a git ni a otro zip.
+A partir de ahí las cookies quedan en este PC (`*_cookies.json` y `chrome_*_profile/`). No copiarlas a git ni a otro zip.
 
-El botón Extraer de vercel.app **no** abre el Chrome de este PC. Extrae siempre desde http://127.0.0.1:8000.
+El botón Extraer de vercel.app **no** abre el Chrome de este PC. Extraer siempre desde http://127.0.0.1:8000.
 
 ---
 
-## Qué hace el motor (todo incluido)
+## Qué queda instalado
 
 - Panel, segmentos, clientes, asistente, borradores, conocimiento, duplicados, auditoría.
 - Perfiles públicos: personas autorizadas, lote de URLs, perfiles generales, páginas de seguros (MAPFRE y otras).
-- Scraping con sesión propia: ficha, publicaciones (texto completo, «ver más»), familia etiquetada, bios y captions, seguidores e intereses, otra red ligada.
+- Scraping: ficha, publicaciones completas («ver más»), familia etiquetada, bios y captions, seguidores e intereses, nota si hay otra red ligada.
 - Revisión de hechos, revisión de contenido, seguidores e intereses.
-- Los hechos se escriben aunque la URL no esté en Personas autorizadas.
+- Los hechos se guardan aunque la URL no esté en Personas autorizadas.
 
 ---
 
@@ -141,19 +159,18 @@ El botón Extraer de vercel.app **no** abre el Chrome de este PC. Extrae siempre
 
 | Síntoma | Qué hacer |
 | --- | --- |
-| `python` no se reconoce | Reinstala Python marcando PATH; cierra y abre PowerShell |
-| Error de base / timeout | Forma A: `DATABASE_URL` UNPOOLED e internet. Forma B: servicio PostgreSQL y `DB_PASSWORD` |
-| Extraer en vercel.app no abre Chrome | Extrae en http://127.0.0.1:8000 |
-| La red pide login | Completa el login en la ventana de Chrome de **este** PC; usa Chrome, no Edge |
-| Sin recomendaciones ni borradores | Falta `LLM_API_KEY` (forma A) o Ollama con `qwen3:4b-instruct` (forma B) |
+| `python` no se reconoce | Reinstalar Python marcando PATH; cerrar y abrir PowerShell |
+| Error de base | Servicio PostgreSQL en ejecución y `DB_PASSWORD` igual a la de Postgres |
+| Extraer en vercel.app no abre Chrome | Extraer en http://127.0.0.1:8000 |
+| La red pide login | Completar el login en la ventana de Chrome de **este** PC; usar Chrome, no Edge |
+| Sin recomendaciones ni borradores | Instalar Ollama con `qwen3:4b-instruct`, o poner `LLM_API_KEY` de Vercel |
+| Sin ingesta del sitio | Falta `FIRECRAWL_API_KEY` |
 
 ---
 
-## Qué no va en este paquete (a propósito)
+## Qué no va en el zip (a propósito)
 
 - `.env` y claves
-- `linkedin_cookies.json`, `facebook_cookies.json`, `instagram_cookies.json`, `x_cookies.json`
+- Cookies: `linkedin_cookies.json`, `facebook_cookies.json`, `instagram_cookies.json`, `x_cookies.json`
 - Carpetas `chrome_*_profile`
-- `data/perfiles_autorizados.json` de otro equipo (aquí va el ejemplo)
-
-En el equipo nuevo se crea `data/perfiles_autorizados.json` a partir de `data/perfiles_autorizados.ejemplo.json`.
+- `data/perfiles_autorizados.json` de otro equipo (aquí se crea desde `data/perfiles_autorizados.ejemplo.json`)

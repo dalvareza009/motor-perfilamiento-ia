@@ -595,6 +595,23 @@ class XActivityScraper:
                 post["texto"] = self.analisis._limpiar_texto(post["texto"], limite=2000)
                 if len(post["texto"]) < 15:
                     continue
+                from app.imagenes_pub import capturar
+                from selenium.webdriver.common.by import By
+                sid = (post.get("url_publicacion") or "").rstrip("/").rsplit("/", 1)[-1]
+                fotos = []
+                if sid:
+                    try:
+                        for art in self.driver.find_elements(By.CSS_SELECTOR, 'article[data-testid="tweet"]'):
+                            hrefs = " ".join(a.get_attribute("href") or ""
+                                             for a in art.find_elements(By.CSS_SELECTOR, 'a[href*="/status/"]'))
+                            if sid in hrefs:
+                                fotos = capturar(art)
+                                break
+                    except Exception:
+                        fotos = []
+                post["imagenes"] = fotos
+                post["n_imagenes"] = len(fotos)
+                post["tiene_imagenes"] = bool(fotos)
                 vistos[clave] = post
                 fecha = parse_fecha_publicacion(post.get("tiempo") or "")
                 if fecha and (hoy - fecha).days > 365:
@@ -606,20 +623,17 @@ class XActivityScraper:
         return vistos
 
     def _elegir(self, publicaciones, max_posts):
-        """Hasta max_posts en total. El repost que encaja con el catálogo entra primero."""
-        from app.linkedin_texto import evaluar_publicacion
-
-        def repost_de_catalogo(post):
-            if post.get("tipo") != "compartida":
-                return False
-            ev = evaluar_publicacion(post.get("texto") or "")
-            return not ev["omitida"] and bool(ev["intereses"])
+        """Hasta max_posts. Solo piezas que nutren el perfil de seguro."""
+        def de_catalogo(post):
+            from app.discernimiento import sirve_post
+            return sirve_post(post)
 
         def grupo_de(post):
             tipo = post.get("tipo") or "publicacion"
             return tipo if tipo in ("compartida", "respuesta", "logro") else "linea"
 
-        return elegir_publicaciones(publicaciones, max_posts, grupo_de, repost_de_catalogo)
+        return elegir_publicaciones(publicaciones, max_posts, grupo_de, de_catalogo,
+                                    solo_utiles=True)
 
     def extraer_publicaciones(self, profile_url, max_posts=10):
         max_posts = tope_publicaciones(max_posts)

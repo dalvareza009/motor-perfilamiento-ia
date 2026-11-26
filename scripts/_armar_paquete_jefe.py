@@ -10,12 +10,12 @@ if not ESCRITORIO.exists():
 SKIP_DIR = {
     ".venv", ".git", ".cursor", ".vercel", "__pycache__", "agent-transcripts",
     "chrome_linkedin_profile", "chrome_facebook_profile", "chrome_instagram_profile",
-    "chrome_x_profile", "node_modules", ".claude",
+    "chrome_x_profile", "chrome_substack_profile", "chrome_reddit_profile", "node_modules", ".claude", "media_publicaciones",
 }
 SKIP_FILE = {
     ".env", ".env.para-el-jefe", "x_cookies.json", "linkedin_cookies.json",
-    "facebook_cookies.json", "instagram_cookies.json",
-    "perfiles_autorizados.json",
+    "facebook_cookies.json", "instagram_cookies.json", "substack_cookies.json", "reddit_cookies.json",
+    "perfiles_autorizados.json", "GUIA-INSTALACION-PRIVADA.md",
 }
 SKIP_PRE = ("_vercel", "_copiar", "_activar", "_probar", "_guardar", "_subir", "_chrome")
 SKIP_SUF = {".pyc", ".csv", ".pdb", ".dump"}

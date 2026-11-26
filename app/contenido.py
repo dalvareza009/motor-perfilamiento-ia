@@ -1,16 +1,20 @@
 """Publicaciones de todas las redes, separadas de la ficha (estudios, cargos, logros).
 
-Un scraping de perfil alimenta las dos ventanas: hechos (información declarada)
-y contenido (lo que la persona publica o comenta).
+Un scraping alimenta tres ventanas:
+- Revisión de hechos: solo datos de la persona para armar el perfil.
+- Revisión contenido: lo que publica o comenta.
+- Seguidores e intereses: seguidores, seguidos, páginas y gustos.
 """
 import re
 import unicodedata
 
 from app.database import get_connection
+from app.imagenes_pub import para_api, parsear as parsear_imagenes
 from app.redes_seguidas import CATEGORIAS_RED
 
-CATEGORIAS_CONTENIDO = ("Publicacion", "Comentario", "Reaccion", "Resumen de contenido")
-CATEGORIAS_NO_FICHA = tuple(CATEGORIAS_RED) + CATEGORIAS_CONTENIDO
+CATEGORIAS_CONTENIDO = ("Publicacion", "Comentario", "Mensaje", "Reaccion", "Resumen de contenido")
+# Otra red = links de perfil para scrapear (van a URLs), no a la ficha.
+CATEGORIAS_NO_FICHA = tuple(CATEGORIAS_RED) + CATEGORIAS_CONTENIDO + ("Otra red",)
 CAMPOS_NO_DESDE_PUBLICACION = ("experiencia", "educacion", "estado_laboral", "estado_academico")
 
 
@@ -164,27 +168,49 @@ def describir_publicacion(post):
 
     post = post or {}
     limpio, estado = texto_mostrable(post.get("texto") or "")
-    if estado == "omitir":
+    if estado == "omitir" and not (post.get("texto_imagen") or post.get("descripcion_imagen")
+                                   or post.get("tiene_imagenes") or post.get("imagenes")):
         return None
+    if estado == "omitir":
+        limpio, estado = "", "ok"
     acotado = acotar(limpio, 220) if estado == "ok" else limpio
     alts = [re.sub(r"\s+", " ", a).strip()
             for a in (post.get("alts") or []) if isinstance(a, str) and len(a.strip()) > 8]
-    n_img = int(post.get("n_imagenes") or post.get("imagenes") or 0)
+    fotos = parsear_imagenes(post.get("imagenes"))
+    for f in fotos:
+        if f.get("alt") and len(f["alt"]) > 8 and f["alt"] not in alts:
+            alts.append(f["alt"])
+        if f.get("ocr") and len(str(f["ocr"]).strip()) > 3:
+            alts.append(str(f["ocr"]).strip())
+    ocr = re.sub(r"\s+", " ", str(post.get("texto_imagen") or "")).strip()
+    desc_img = re.sub(r"\s+", " ", str(post.get("descripcion_imagen") or "")).strip()
+    n_img = int(post.get("n_imagenes") or 0) or len(fotos)
     if not n_img:
         n_img = len(alts) or (1 if post.get("tiene_imagenes") else 0)
-    tiene = bool(n_img or post.get("tiene_imagenes") or alts)
-    mezcla = " ".join(p for p in (acotado if estado == "ok" else "", *alts[:3]) if p)
-    temas = clasificar(mezcla)[:3] if mezcla else []
+    tiene = bool(n_img or post.get("tiene_imagenes") or alts or fotos or ocr)
+    mezcla = " ".join(p for p in (
+        acotado if estado == "ok" else "", ocr, desc_img, *alts[:4]) if p)
+    temas = clasificar(mezcla)[:4] if mezcla else []
     partes = []
+    tipo = (post.get("tipo") or "").lower()
+    if tipo in ("comentario", "comment", "mensaje", "reply", "respuesta"):
+        partes.append("Mensaje o comentario, no es una publicación.")
+    elif tipo in ("compartida", "repost", "restack"):
+        autor = (post.get("autor") or "").strip()
+        partes.append("Restack" + (f" de {autor}." if autor else "."))
     if tiene:
         partes.append("Incluye imagen." if n_img <= 1 else f"Incluye {n_img} imágenes.")
+    if desc_img:
+        partes.append(desc_img if desc_img.endswith(".") else desc_img + ".")
+    elif ocr:
+        partes.append("En la imagen se lee: «" + acotar(ocr, 160) + "».")
     if temas:
         partes.append("Trata de " + ", ".join(t.lower() for t in temas) + ".")
     elif estado == "ok" and acotado:
         partes.append("Publicó: " + acotar(acotado, 140))
-    elif tiene:
-        partes.append("Publicó una imagen sin descripción.")
-    else:
+    elif tiene and not desc_img and not ocr:
+        partes.append("Publicó una imagen sin texto legible.")
+    elif not partes:
         partes.append("Publicó contenido sin un tema claro.")
     return {
         "texto": acotado,
@@ -209,9 +235,16 @@ def resumir_actividad(posts):
             if t not in vistos:
                 vistos.add(t)
                 temas.append(t)
+    n_restack = sum(1 for p in (posts or [])
+                    if (p.get("tipo") or "").lower() in ("compartida", "repost", "restack"))
+    n_ocr = sum(1 for p in (posts or []) if p.get("texto_imagen") or p.get("descripcion_imagen"))
     partes = [f"Publicó {len(piezas)} pieza(s)."]
+    if n_restack:
+        partes.append(f"{n_restack} restack(s).")
     if n_img:
         partes.append(f"{n_img} con imagen.")
+    if n_ocr:
+        partes.append(f"Se leyó el texto de {n_ocr} imagen(es).")
     if temas:
         partes.append("Temas: " + ", ".join(temas[:5]) + ".")
     return " ".join(partes)
@@ -273,7 +306,8 @@ def listar(nombre="", red="", limite=500):
                                   COALESCE(tipo, 'publicacion') AS tipo, fecha_extraccion,
                                   COALESCE(resumen, '') AS resumen,
                                   COALESCE(tiene_imagenes, FALSE) AS tiene_imagenes,
-                                  COALESCE(n_imagenes, 0) AS n_imagenes
+                                  COALESCE(n_imagenes, 0) AS n_imagenes,
+                                  COALESCE(imagenes, '[]') AS imagenes
                            FROM public.publicaciones_linkedin
                            WHERE (%s = '' OR LOWER(nombre) = LOWER(%s))
                              AND (%s = '' OR LOWER(COALESCE(red, 'linkedin')) = %s)
@@ -299,6 +333,7 @@ def listar(nombre="", red="", limite=500):
                     "resumen": p.get("resumen") or "",
                     "tiene_imagenes": bool(p.get("tiene_imagenes")),
                     "n_imagenes": int(p.get("n_imagenes") or 0),
+                    "imagenes": para_api(p.get("imagenes")),
                     "estado": estado,
                     "tiempo": p.get("tiempo") or "",
                     "url": (p.get("url_publicacion") or "").strip() or (p.get("fuente_url") or ""),

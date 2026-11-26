@@ -556,6 +556,14 @@ class InstagramActivityScraper:
         autor = (datos.get("origen") or "").strip() if repost else (self.info.get("nombre") or "")
         if not autor:
             autor = self.info.get("nombre") or ""
+        from app.imagenes_pub import capturar
+        fotos = []
+        try:
+            art = self.driver.find_element(By.TAG_NAME, "article")
+            fotos = capturar(art)
+        except Exception:
+            fotos = []
+        n_img = max(n_img, len(fotos))
         return {
             "perfil": profile_url, "urn": "N/A", "url_publicacion": url_post,
             "tipo": "compartida" if repost else "publicacion",
@@ -564,25 +572,23 @@ class InstagramActivityScraper:
             "hashtags": ";".join(self.analisis.extraer_hashtags(texto)),
             "enlaces": "", "reacciones": "", "comentarios": "",
             "alts": [a for a in (datos.get("alts") or []) if a],
+            "imagenes": fotos,
             "n_imagenes": n_img,
-            "tiene_imagenes": bool(n_img),
+            "tiene_imagenes": bool(n_img or fotos),
             "fecha_extraccion": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
 
     def _elegir(self, publicaciones, max_posts):
-        """Hasta max_posts en total. Los reposts que encajan con el catálogo entran primero."""
-        from app.linkedin_texto import evaluar_publicacion
-
+        """Hasta max_posts. Solo piezas que nutren el perfil de seguro."""
         def de_catalogo(post):
-            if post.get("tipo") != "compartida":
-                return False
-            ev = evaluar_publicacion(post.get("texto") or "")
-            return not ev["omitida"] and bool(ev["intereses"])
+            from app.discernimiento import sirve_post
+            return sirve_post(post)
 
         def grupo_de(post):
             return "compartida" if post.get("tipo") == "compartida" else "propia"
 
-        return elegir_publicaciones(publicaciones, max_posts, grupo_de, de_catalogo)
+        return elegir_publicaciones(publicaciones, max_posts, grupo_de, de_catalogo,
+                                    solo_utiles=True)
 
     def extraer_publicaciones(self, profile_url, max_posts=10):
         max_posts = tope_publicaciones(max_posts)

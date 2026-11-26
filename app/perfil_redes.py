@@ -1,11 +1,13 @@
 """Hechos de vida a partir del markdown de un perfil público de red social.
 
 Solo perfiles que la persona autorizó. Extrae lo que el texto dice de forma explícita
-(trabajo actual, estudios, ubicación, familia). No infiere hijos, pareja ni ingresos.
+(trabajo y empresa, estudios, familia, hijos, estado civil, ubicación, intereses).
+El salario, si la persona lo publica, queda como rango de ingresos para el asesor;
+no se usa en mensajes al cliente.
 """
 import re
 import unicodedata
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 HEAD = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
 EMAIL = re.compile(r"\b[\w.+-]+@[\w.-]+\.\w+\b")
@@ -14,13 +16,19 @@ TELEFONO = re.compile(r"(?:\+?\d[\d\s().-]{7,}\d)")
 FAMILIA = re.compile(
     r"\b(soy madre|soy padre|madre de|padre de|mama de|papa de|mam[aá] de|pap[aá] de|"
     r"mi hijo|mi hija|mis hijos|mis hijas|tengo un hijo|tengo una hija|tengo hijos|"
+    r"mi bebe|nuestr[oa] bebe|estoy embarazada|"
     r"esposo|esposa|mi pareja|casad[oa]|mi hermano|mi hermana|mi madre|mi padre|"
     r"mis padres|mi mama|mi papa|mi tio|mi tia|t[ií]o|t[ií]a|yerno|nuera|"
     r"padrastro|madrastra|sobrino|sobrina)\b"
 )
 ESTUDIOS = re.compile(
-    r"\b(estudie|estudio|estudiante|universidad|egresad\w*|maestr\w*|especializ\w*|bachiller\w*|"
-    r"colegio|formacion|pregrado|posgrado|student|university|college)\b"
+    r"\b(estudie|estudiante|universidad|egresad\w*|maestr\w*|especializ\w*|bachiller\w*|"
+    r"colegio|pregrado|posgrado|student|university|college)\b"
+)
+_YO_CURSO = re.compile(
+    r"\b((?:complete|termine|hice) (?:el |un )?(?:curso|diplomado|certificacion)|"
+    r"estoy haciendo (?:un |el )?curso|me certifique|"
+    r"saque (?:la |el )certificacion)\b"
 )
 TRABAJO_VERBO = re.compile(
     r"\b(trabajo|trabaja|trabaje|empleo|cargo|experiencia laboral|actualmente|"
@@ -44,6 +52,10 @@ _YO_ESTUDIOS = re.compile(
     r"logr\w*.{0,40}(maestr\w*|titulo|carrera|pregrado|universidad))\b"
 )
 UBICACION = re.compile(r"\b(vivo en|vive en|viviendo en|resido|ubicad|me mude|radicad)\b")
+_INGRESOS = re.compile(
+    r"\b(salario|sueldo|ingresos|honorarios|remuneracion|compensacion|salary|compensation|"
+    r"aumento salarial|me pagaron|mi paga)\b"
+)
 ESTADO_CIVIL = re.compile(
     r"\b(solter[oa]|casad[oa]|divorciad[oa]|viud[oa]|union libre|separad[oa]|"
     r"comprometid[oa]|en una relacion|me case|me divorcie)\b"
@@ -70,8 +82,8 @@ PAREJA = re.compile(r"\b(esposo|esposa|pareja|casad[oa])\b")
 
 DESCARTAR = (
     "seguidor", "follower", "following", "me gusta", "likes", "iniciar sesion", "sign in",
-    "log in", "unete", "join now", "cookies", "contrasena", "password", "salario", "sueldo",
-    "ingresos", "compensation", "salary", "mensaje directo", "enviar mensaje", "publicidad",
+    "log in", "unete", "join now", "cookies", "contrasena", "password",
+    "mensaje directo", "enviar mensaje", "publicidad",
     "sponsored", "conectar", "connect",
 )
 MURO = (
@@ -80,7 +92,7 @@ MURO = (
 )
 OMITIR_SECCION = (
     "aptitud", "skill", "recomendacion", "actividad", "publicacion", "comentario",
-    "gente que", "personas que", "intereses", "licencia", "contacto",
+    "gente que", "personas que", "intereses", "contacto",
 )
 MIN_CHARS = 12
 
@@ -105,6 +117,153 @@ def _descartar(texto):
     return (not n) or any(d in n for d in DESCARTAR) or bool(EMAIL.search(texto))
 
 
+_RUIDO_NOMBRE = {
+    "n/a", "na", "linkedin", "feed", "inicio", "home", "publicacion",
+    "publicaciones", "publication", "publications", "perfil", "profile",
+    "actividad", "activity", "conectar", "seguir", "ver perfil", "available",
+    "sin nombre", "esta pagina no existe", "this page doesnt exist",
+    "substack", "reddit", "facebook", "instagram", "notificacion",
+    "notificaciones", "notification", "notifications", "mensaje", "mensajes",
+    "message", "messages", "compartir", "share", "shares", "repost", "reposts",
+    "comentario", "comentarios", "comment", "comments", "reaccion", "reacciones",
+    "buscar", "search", "usuario", "user", "member", "miembro", "unete", "join",
+    "foto", "fotos", "imagen", "imagenes", "video", "videos", "post", "posts",
+    "update", "updates", "pagina", "page", "disponible", "miembro de linkedin",
+}
+
+
+def nombre_desde_slug(url):
+    """Mariana Gutierrez Jaramillo a partir de /in/mariana-gutierrez-jaramillo/."""
+    partes = [unquote(s) for s in urlparse(url or "").path.split("/") if s]
+    slug = ""
+    host = (urlparse(url or "").hostname or "").lower().removeprefix("www.")
+    if partes and partes[0].startswith("@"):
+        slug = partes[0][1:]
+    elif host.endswith(".substack.com"):
+        slug = host[: -len(".substack.com")].replace("-", " ")
+    elif len(partes) >= 2 and partes[0].lower() == "in":
+        slug = partes[1]
+    if not slug:
+        return ""
+    slug = re.sub(r"[-_.]+", " ", slug)
+    slug = re.sub(r"\b\d{3,}\b", "", slug)
+    palabras = [p for p in slug.split() if p and not p.isdigit() and len(p) > 1]
+    if len(palabras) < 2:
+        return ""
+    return " ".join(p[0].upper() + p[1:] for p in palabras)[:120]
+
+
+# LinkedIn pone el número de avisos al inicio del título: "(24) Nombre | LinkedIn".
+_AVISO_LINKEDIN = re.compile(r"^(?:\(\s*\d{1,4}\+?\s*\)\s*)+")
+_SALUDO = re.compile(r"(?i)(\bHola)(\s*,?\s*)([^\s,;:.!?]+)")
+
+
+def _token_basura(token):
+    """Número de avisos o palabra de la interfaz, no un nombre de persona."""
+    t = re.sub(r"^[^\w]+|[^\w]+$", "", str(token or ""), flags=re.UNICODE)
+    if not t:
+        return True
+    if re.fullmatch(r"\d{1,4}\+?", t):
+        return True
+    return _n(t) in _RUIDO_NOMBRE
+
+
+def _sin_basura(texto):
+    texto = _AVISO_LINKEDIN.sub("", texto or "")
+    partes = []
+    for p in texto.split():
+        if _token_basura(p):
+            continue
+        limpio = p.strip(".,;:¡!¿?()[]{}")
+        if limpio and not _token_basura(limpio):
+            partes.append(limpio)
+    return " ".join(partes).strip(" ·|-")
+
+
+def nombre_de_perfil(texto, url=""):
+    """Nombre de persona. Descarta 'N/A', 'Publicación', el (24) de LinkedIn, etc."""
+    t = re.sub(r"\s+", " ", str(texto or "")).strip().split("\n")[0]
+    t = t.split("|")[0].split(" – ")[0].split(" - ")[0].strip(" ·|-")
+    t = _sin_basura(t)
+    baja = _n(t)
+    if (len(t) < 2 or len(t) > 80 or baja in _RUIDO_NOMBRE or baja.startswith("http")
+            or "linkedin" in baja or t.lower() == "n/a"):
+        t = ""
+    if t:
+        return t[:120]
+    return nombre_desde_slug(url)
+
+
+def primer_nombre(nombre, url=""):
+    """Primera palabra del nombre real. Ignora números y palabras de la interfaz."""
+    limpio = nombre_de_perfil(nombre, url)
+    partes = [p for p in limpio.split() if not _token_basura(p)]
+    return partes[0] if partes else ""
+
+
+def corregir_saludo(cuerpo, nombre, url=""):
+    """Si el saludo dice Hola Publicación o Hola (24), lo cambia por el nombre real."""
+    limpio = nombre_de_perfil(nombre, url)
+    corto = primer_nombre(limpio)
+    if not corto or not cuerpo:
+        return cuerpo or ""
+    validos = {_n(p) for p in limpio.split() if p and not _token_basura(p)}
+
+    def cambiar(m):
+        token = m.group(3).strip("()")
+        if _n(token) in validos:
+            return m.group(0)
+        return f"{m.group(1)}{m.group(2)}{corto}"
+
+    return _SALUDO.sub(cambiar, cuerpo, count=1)
+
+
+_SUBSTACK_RESERVADOS = {
+    "www", "api", "cdn", "open", "app", "support", "help", "onboarding",
+    "login", "signin", "signup", "account", "accounts", "static", "media",
+}
+
+
+def _url_substack(host, partes):
+    """Perfil @usuario o newsletter usuario.substack.com. No el home ni posts sueltos."""
+    host = (host or "").lower().removeprefix("www.")
+    if host == "substack.com":
+        if partes and partes[0].startswith("@"):
+            handle = partes[0][1:].strip().lower()
+            if re.fullmatch(r"[a-z0-9_.-]{2,40}", handle):
+                return "substack", f"https://substack.com/@{handle}"
+        return None
+    if host.endswith(".substack.com"):
+        sub = host[: -len(".substack.com")]
+        if sub and "." not in sub and sub not in _SUBSTACK_RESERVADOS:
+            return "substack", f"https://{sub}.substack.com/"
+    return None
+
+
+_REDDIT_RESERVADOS = {
+    "popular", "all", "reddit", "admin", "login", "register", "premium",
+    "coins", "gallery", "explore", "search", "message", "chat", "settings",
+    "notifications", "submit", "r", "user", "u", "home",
+}
+
+
+def _url_reddit(host, partes):
+    """Perfil /user/nombre o /u/nombre. No el home ni un subreddit."""
+    host = (host or "").lower()
+    for pref in ("www.", "old.", "new.", "np."):
+        if host.startswith(pref):
+            host = host[len(pref):]
+    if host != "reddit.com":
+        return None
+    if len(partes) >= 2 and partes[0].lower() in ("user", "u"):
+        handle = partes[1].strip()
+        if handle.lower() in _REDDIT_RESERVADOS:
+            return None
+        if re.fullmatch(r"[A-Za-z0-9_-]{2,30}", handle):
+            return "reddit", f"https://www.reddit.com/user/{handle}/"
+    return None
+
+
 def clasificar_url(url):
     """-> (red, url_limpia) si es la página pública de un perfil. Si no, None."""
     raw = (url or "").strip()
@@ -112,6 +271,16 @@ def clasificar_url(url):
         return None
     partes_url = urlparse(raw)
     host = (partes_url.hostname or "").lower().removeprefix("www.")
+    if host.endswith(".linkedin.com") or host == "linkedin.com":
+        host = "linkedin.com"
+    partes_crudas = [s for s in partes_url.path.split("/") if s]
+    partes = [unquote(s) for s in partes_crudas]
+    ss = _url_substack(host, partes)
+    if ss:
+        return ss
+    rd = _url_reddit(host, partes)
+    if rd:
+        return rd
     redes = {
         "linkedin.com": "linkedin",
         "instagram.com": "instagram",
@@ -124,15 +293,18 @@ def clasificar_url(url):
     red = redes.get(host)
     if not red:
         return None
-    partes = [unquote(s) for s in partes_url.path.split("/") if s]
     if not partes:
         return None
     bajas = [s.lower() for s in partes]
     if any(s in {"login", "signin", "signup", "messages", "messaging", "share", "search",
                  "settings", "explore", "intent"} for s in bajas):
         return None
-    if red == "linkedin" and bajas[0] == "in" and len(partes) == 2:
-        return red, f"https://www.linkedin.com/in/{partes[1]}"
+    if red == "linkedin" and bajas[0] == "in" and len(partes) >= 2:
+        # LinkedIn 404 si el slug va con tilde cruda; se deja percent-encoded.
+        slug = quote(unquote(partes_crudas[1]), safe="-._~")
+        if not slug or slug.lower() in {"in", "login", "feed"}:
+            return None
+        return red, f"https://www.linkedin.com/in/{slug}/"
     if red == "instagram" and len(partes) == 1 and bajas[0] not in {"p", "reel", "reels", "stories"}:
         return red, f"https://www.instagram.com/{partes[0]}/"
     if red == "facebook" and bajas[0] == "profile.php":
@@ -152,7 +324,8 @@ def clasificar_url(url):
 _URL_EN_TEXTO = re.compile(r"https?://[^\s)>\]]+", re.I)
 _NOMBRE_RED = {
     "instagram": "Instagram", "facebook": "Facebook", "x": "X",
-    "linkedin": "LinkedIn", "tiktok": "TikTok",
+    "linkedin": "LinkedIn", "tiktok": "TikTok", "substack": "Substack",
+    "reddit": "Reddit",
 }
 
 
@@ -239,6 +412,8 @@ def _tipo_seccion(titulo):
     n = _n(titulo)
     if any(k in n for k in OMITIR_SECCION):
         return "omitir"
+    if any(k in n for k in ("certif", "licencia", "license", "curso", "cursos", "courses")):
+        return "Cursos"
     if any(k in n for k in ("experiencia", "experience", "empleo", "trabajo")):
         return "Trabajo"
     if any(k in n for k in ("educacion", "education", "estudios", "formacion")):
@@ -248,7 +423,9 @@ def _tipo_seccion(titulo):
     if any(k in n for k in ("ubicacion", "location")):
         return "Ubicacion"
     if any(k in n for k in ("acerca", "about", "biografia", "resumen")):
-        return "Situacion actual"
+        return "Descripcion"
+    if any(k in n for k in ("informacion", "information", "datos personales", "intro")):
+        return "Informacion"
     return None
 
 
@@ -265,6 +442,8 @@ def _oraciones(texto):
 
 
 def categorias_oracion(texto, seccion=None):
+    from app.tipo_dato import eje_ficha
+
     n_previo = _n(texto)
     corto_util = bool(FAMILIA.search(n_previo) or TRABAJO_CARGO.search(n_previo) or ESTADO_CIVIL.search(n_previo))
     if _descartar(texto) or (len(texto) < MIN_CHARS and not corto_util):
@@ -278,22 +457,29 @@ def categorias_oracion(texto, seccion=None):
             cats.append("Edad")
     if ESTADO_CIVIL.search(n):
         cats.append("Estado civil")
-    if seccion == "Estudios" or ESTUDIOS.search(n):
-        cats.append("Estudios")
+    if _INGRESOS.search(n):
+        cats.append("Ingresos")
+    eje = eje_ficha(texto, seccion=seccion)
+    if eje in ("Estudios", "Cursos", "Trabajo", "Experiencia"):
+        cats.append(eje)
     if ESTADO_ACADEMICO.search(n):
         cats.append("Estado academico")
-    trabajo = seccion == "Trabajo" or bool(TRABAJO_VERBO.search(n))
-    if not trabajo and TRABAJO_CARGO.search(n) and "Estudios" not in cats:
-        trabajo = True
-    if trabajo:
-        cats.append("Trabajo")
     if ESTADO_LABORAL.search(n) or re.fullmatch(
             r"(autonom[oa]|independiente|emplead[oa]|desemplead[oa]|pensionad[oa]|jubilad[oa]|estudiante)", n):
         cats.append("Estado laboral" if not re.fullmatch(r"estudiante", n) else "Estado academico")
     if (seccion == "Ubicacion" or UBICACION.search(n) or CIUDAD.match(texto)) and not _VIAJE.search(n):
         cats.append("Ubicacion")
+    if seccion == "Descripcion" and not any(c in cats for c in (
+            "Trabajo", "Experiencia", "Estudios", "Cursos", "Familia", "Ubicacion",
+            "Ingresos", "Estado civil", "Edad")):
+        if len(texto) >= 24:
+            cats.append("Descripcion")
+    if seccion == "Informacion" and not cats:
+        cats.append("Informacion")
     if seccion == "Situacion actual" and not cats and len(texto) >= 40:
-        cats.append("Situacion actual")
+        cats.append("Descripcion")
+    if seccion == "Cursos" and "Cursos" not in cats:
+        cats.append("Cursos")
     return list(dict.fromkeys(cats))
 
 
@@ -327,11 +513,16 @@ _CAMPOS_FRASE = {
     "Familia": "familia",
     "Edad": "edad",
     "Trabajo": "experiencia",
+    "Experiencia": "experiencia_pasada",
     "Estudios": "educacion",
+    "Cursos": "cursos",
     "Ubicacion": "ubicacion",
     "Estado civil": "estado_civil",
     "Estado laboral": "estado_laboral",
     "Estado academico": "estado_academico",
+    "Descripcion": "bio",
+    "Informacion": "informacion",
+    "Ingresos": "ingresos",
 }
 
 
@@ -361,7 +552,8 @@ def edad_de_frase(frase, hoy=None):
 
 
 _CAMPOS_NO_PUBLICACION = frozenset({
-    "experiencia", "educacion", "estado_laboral", "estado_academico",
+    "experiencia", "experiencia_pasada", "educacion", "cursos",
+    "estado_laboral", "estado_academico", "bio", "informacion",
 })
 
 
@@ -384,11 +576,15 @@ def aplicar_frase(info, frase, hoy=None, desde_publicacion=False):
         if not campo or campo == "edad":
             continue
         if desde_publicacion and campo in _CAMPOS_NO_PUBLICACION:
-            if campo in ("experiencia", "estado_laboral") and not (
+            if campo in ("experiencia", "experiencia_pasada", "estado_laboral") and not (
                     _YO_TRABAJO.search(n) or ESTADO_LABORAL.search(n)):
                 continue
             if campo in ("educacion", "estado_academico") and not (
                     _YO_ESTUDIOS.search(n) or ESTADO_ACADEMICO.search(n)):
+                continue
+            if campo == "cursos" and not _YO_CURSO.search(n):
+                continue
+            if campo in ("bio", "informacion"):
                 continue
         _anexar_campo(info, campo, frase)
     return info
@@ -403,9 +599,15 @@ def aplicar_lo_publicado(info, posts, hoy=None, origen="publicacion"):
     info = dict(info or {})
     desde_publicacion = origen != "ficha"
     for post in posts or []:
-        if (post.get("tipo") or "publicacion") == "compartida":
+        tipo = (post.get("tipo") or "publicacion").lower()
+        if tipo in ("compartida", "repost", "restack", "comentario", "comment",
+                    "mensaje", "reply", "respuesta", "reaccion"):
             continue
-        for oracion in _oraciones(post.get("texto") or ""):
+        partes = [post.get("texto") or ""]
+        for alt in post.get("alts") or []:
+            if isinstance(alt, str) and alt.strip():
+                partes.append(alt)
+        for oracion in _oraciones(". ".join(p for p in partes if p)):
             aplicar_frase(info, oracion, hoy, desde_publicacion=desde_publicacion)
     return info
 
@@ -751,6 +953,17 @@ def _fecha_legible(valor):
     return None
 
 
+def _empleo_es_pasado(puesto):
+    fin_crudo = puesto.get("end_date") or puesto.get("end_at") or puesto.get("ended_at")
+    if fin_crudo in (None, "", "None", "null"):
+        return False
+    fin = _fecha_legible(fin_crudo)
+    if fin == "actualidad":
+        return False
+    texto = str(fin_crudo).strip().lower()
+    return texto not in ("actualidad", "present", "presente", "current", "now", "hoy")
+
+
 def _linea_puesto(puesto):
     cargo = _texto_util(puesto.get("title"))
     empresa = _texto_util(puesto.get("organization_name") or puesto.get("company_name") or puesto.get("company"))
@@ -796,7 +1009,7 @@ def hechos_desde_ficha(data):
     resumen = _texto_util(persona.get("summary") or persona.get("about") or persona.get("description")
                           or persona.get("bio"))
     if resumen and (not titular or _n(resumen) != _n(titular)):
-        _agregar(hechos, "Situacion actual", resumen)
+        _agregar(hechos, "Descripcion", resumen)
 
     historial = []
     crudo = persona.get("employment_history")
@@ -814,7 +1027,8 @@ def hechos_desde_ficha(data):
     for puesto in historial:
         linea = _linea_puesto(puesto)
         if linea:
-            _agregar(hechos, "Trabajo", linea)
+            cat = "Experiencia" if _empleo_es_pasado(puesto) else "Trabajo"
+            _agregar(hechos, cat, linea)
         estudio = _linea_estudio({"degree": puesto.get("degree"), "major": puesto.get("major"),
                                   "school_name": puesto.get("school_name")})
         if estudio:
@@ -831,7 +1045,9 @@ def hechos_desde_ficha(data):
     for edu in estudios:
         linea = _linea_estudio(edu)
         if linea:
-            _agregar(hechos, "Estudios", linea)
+            from app.tipo_dato import eje_ficha
+            cat_edu = eje_ficha(linea, seccion="Estudios", default="Estudios")
+            _agregar(hechos, cat_edu or "Estudios", linea)
 
     if isinstance(persona.get("age"), int) and 15 <= persona["age"] <= 100:
         _agregar(hechos, "Edad", f"{persona['age']} años")
@@ -851,6 +1067,114 @@ def hechos_desde_ficha(data):
         titulo = hecho["categoria"] if n == 1 else f"{hecho['categoria']} ({n})"
         salida.append({**hecho, "titulo": titulo})
     return salida
+
+
+# Lo que la red pega al final de la ficha y no es un dato de la persona.
+_CORTES_FICHA = (
+    r"m[aá]s perfiles para ti", r"people also viewed", r"perfiles similares",
+    r"personas que tambi[eé]n vieron", r"aptitudes\s*:", r"skills\s*:",
+    r"enviar mensaje", r"send message", r"linkedin corporation",
+    r"acerca de\s+accesibilidad", r"pautas comunitarias",
+    r"opciones de publicidad", r"talent solutions", r"marketing solutions",
+    r"sales solutions", r"centro de seguridad", r"centro de ayuda",
+    r"tienes preguntas\?", r"gestiona tu cuenta",
+    r"transparencia de las recomendaciones", r"peque[nñ]as empresas",
+    r"empleo marketing", r"privacidad y condiciones",
+)
+_CORTE_FICHA = re.compile("|".join(f"(?:{p})" for p in _CORTES_FICHA), re.I)
+_CONTEO_RED = re.compile(
+    r"\b\d[\d.,]*\s*(?:publicaciones|seguidores|seguidos|followers|following|posts)\b",
+    re.I,
+)
+_ETIQUETA_SECCION = re.compile(
+    r"^(?:educaci[oó]n|experiencia|trabajo|estudios|ubicaci[oó]n)\s+", re.I)
+
+
+def limpiar_contenido_ficha(texto):
+    """Quita el pie de la red, perfiles recomendados y conteos de seguidores."""
+    t = re.sub(r"\s+", " ", str(texto or "")).strip()
+    if not t:
+        return ""
+    m = _CORTE_FICHA.search(t)
+    if m:
+        t = t[:m.start()]
+    t = _CONTEO_RED.sub("", t)
+    t = _ETIQUETA_SECCION.sub("", t.strip())
+    return re.sub(r"\s+", " ", t).strip(" .|·-")
+
+
+def _items_ficha(hecho, nombre=""):
+    if (hecho.get("categoria") or "") == "Producto sugerido":
+        titulo = (hecho.get("titulo") or "").strip()
+        return [titulo] if titulo else []
+    crudo = limpiar_contenido_ficha(hecho.get("contenido") or "")
+    if not crudo:
+        return []
+    categoria = hecho.get("categoria") or ""
+    partes = [p.strip(" .") for p in re.split(r"\s*\|\s*|\n+", crudo) if p.strip(" .")]
+    if categoria in ("Ubicacion", "Origen"):
+        frases = []
+        for parte in partes:
+            frases.extend(p.strip(" .") for p in re.split(r"(?<=[.!?])\s+", parte) if p.strip(" ."))
+        partes = frases or partes
+    salida = []
+    nombre_n = _n(nombre or hecho.get("nombre") or "")
+    for parte in partes:
+        n = _n(parte)
+        if not n or n == nombre_n:
+            continue
+        if categoria in ("Descripcion", "Situacion actual", "Informacion"):
+            sin_nombre = n.replace(nombre_n, "").strip(" @·.-") if nombre_n else n
+            if len(sin_nombre) < 12:
+                continue
+        salida.append(parte)
+    return salida
+
+
+_SECCIONES_FICHA = (
+    ("trabajo", "Trabajo", ("Trabajo", "Estado laboral")),
+    ("experiencia", "Experiencia", ("Experiencia",)),
+    ("estudios", "Estudios", ("Estudios", "Estado academico")),
+    ("cursos", "Cursos", ("Cursos",)),
+    ("estado_civil", "Estado civil", ("Estado civil",)),
+    ("familia", "Familia e hijos", ("Familia", "Hijos", "Indicio de hijos")),
+    ("lugar", "De dónde es y dónde vive", ("Origen", "Ubicacion")),
+    ("edad", "Edad", ("Edad",)),
+    ("presentacion", "Presentación", ("Descripcion", "Situacion actual", "Informacion")),
+    ("contacto", "Contacto", ("Contacto", "Correo", "Celular")),
+    ("ingresos", "Ingresos publicados (solo para el asesor)", ("Ingresos",)),
+    ("producto", "Producto sugerido", ("Producto sugerido",)),
+)
+
+
+def organizar_ficha(hechos):
+    """Ficha legible: cada dato en su apartado y cada estudio como un renglón.
+
+    Seguidores, cuentas seguidas, reposts, publicaciones, mensajes, comentarios
+    y reacciones no entran: ya tienen su propia pestaña.
+    """
+    from app.contenido import excluidas_de_ficha
+    fuera = set(excluidas_de_ficha()) | {"Gusto"}
+    por_categoria = {}
+    for hecho in hechos or []:
+        if (hecho.get("categoria") or "") in fuera:
+            continue
+        por_categoria.setdefault(hecho.get("categoria") or "", []).append(hecho)
+    secciones = []
+    for clave, titulo, categorias in _SECCIONES_FICHA:
+        items, vistos = [], set()
+        for categoria in categorias:
+            for hecho in por_categoria.get(categoria, []):
+                for texto in _items_ficha(hecho):
+                    n = _n(texto)
+                    if n in vistos:
+                        continue
+                    vistos.add(n)
+                    items.append({"texto": texto, "red": hecho.get("red") or "",
+                                  "categoria": categoria})
+        if items:
+            secciones.append({"clave": clave, "titulo": titulo, "items": items})
+    return secciones
 
 
 def ciudad_usable(texto):
@@ -898,14 +1222,16 @@ def sugerir_productos(hechos):
         n = _n(h["contenido"])
         razones = por_producto
         candidatos = []
-        if h["categoria"] == "Estudios" or ESTUDIOS.search(n):
+        if h["categoria"] == "Estudios":
             candidatos.append("Seguro educativo")
-        if h["categoria"] == "Familia" and HIJOS.search(n):
+        if h["categoria"] == "Hijos" or (h["categoria"] == "Familia" and HIJOS.search(n)):
             candidatos += ["Seguro educativo", "Seguro de vida"]
         if h["categoria"] in ("Familia", "Estado civil") and PAREJA.search(n):
             candidatos.append("Seguro de vida")
-        if h["categoria"] == "Trabajo":
+        if h["categoria"] in ("Trabajo", "Experiencia"):
             candidatos += ["Seguro de vida", "Seguro de accidentes personales"]
+        if h["categoria"] == "Ingresos":
+            candidatos.append("Seguro renta voluntaria")
         if JUBILACION.search(n):
             candidatos += ["Seguro de pensión", "Seguro renta vitalicia"]
         if h["categoria"] == "Gusto":
@@ -927,5 +1253,10 @@ def sugerir_productos(hechos):
             razones.setdefault(producto, [])
             if porque not in razones[producto]:
                 razones[producto].append(porque)
+    from app.perfiles_catalogo import sugerencias as _sugerencias_2026
+    for producto, razon in _sugerencias_2026(hechos):
+        razones.setdefault(producto, [])
+        if razon not in razones[producto]:
+            razones[producto].append(razon)
     return [{"categoria": "Producto sugerido", "titulo": producto,
              "contenido": " | ".join(razones)} for producto, razones in por_producto.items()]
